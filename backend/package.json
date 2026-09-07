@@ -1,0 +1,20 @@
+{
+  "name": "itike-backend",
+  "version": "1.0.0",
+  "description": "Backend API for the Itike bus ticket reservation platform",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "keywords": [
+    "itike",
+    "bus",
+    "reservation",
+    "ticketing"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
