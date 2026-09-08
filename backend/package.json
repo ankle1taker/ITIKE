@@ -1,10 +1,15 @@
 {
   "name": "itike-backend",
+  "type": "module",
   "version": "1.0.0",
   "description": "Backend API for the Itike bus ticket reservation platform",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio"
   },
   "keywords": [
     "itike",
@@ -15,6 +20,11 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@prisma/client": "^7.10.0",
     "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.0",
+    "prisma": "^7.10.0"
   }
 }

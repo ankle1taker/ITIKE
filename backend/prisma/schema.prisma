@@ -1,0 +1,145 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Booking {
+  id                         String        @id
+  tripId                     String
+  userId                     String
+  agentId                    String?
+  totalAmount                Float
+  status                     BookingStatus @default(HELD)
+  expiresAt                  DateTime?
+  createdAt                  DateTime      @default(now())
+  updatedAt                  DateTime
+  User_Booking_agentIdToUser User?         @relation("Booking_agentIdToUser", fields: [agentId], references: [id])
+  Trip                       Trip          @relation(fields: [tripId], references: [id])
+  User_Booking_userIdToUser  User          @relation("Booking_userIdToUser", fields: [userId], references: [id])
+  BookingSeat                BookingSeat[]
+  Payment                    Payment?
+}
+
+model BookingSeat {
+  id              String  @id
+  bookingId       String
+  seatNumber      String
+  passengerName   String
+  passengerPhone  String
+  passengerIdType String?
+  passengerIdNum  String?
+  Booking         Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+}
+
+model Bus {
+  id          String   @id
+  operatorId  String
+  plateNumber String   @unique
+  busType     String
+  capacity    Int
+  seatLayout  Json
+  amenities   String[]
+  status      String   @default("ACTIVE")
+  createdAt   DateTime @default(now())
+  Operator    Operator @relation(fields: [operatorId], references: [id])
+  Trip        Trip[]
+}
+
+model Operator {
+  id        String   @id
+  name      String
+  contact   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  Bus       Bus[]
+  Trip      Trip[]
+}
+
+model Payment {
+  id          String        @id
+  bookingId   String        @unique
+  amount      Float
+  provider    String
+  providerRef String?
+  status      PaymentStatus @default(PENDING)
+  paidAt      DateTime?
+  createdAt   DateTime      @default(now())
+  Booking     Booking       @relation(fields: [bookingId], references: [id])
+}
+
+model Route {
+  id          String   @id
+  origin      String
+  destination String
+  distanceKm  Float
+  durationMin Int
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  Trip        Trip[]
+}
+
+model Trip {
+  id            String     @id
+  routeId       String
+  busId         String
+  operatorId    String
+  driverId      String?
+  departureTime DateTime
+  arrivalTime   DateTime
+  basePrice     Float
+  status        TripStatus @default(SCHEDULED)
+  createdAt     DateTime   @default(now())
+  Booking       Booking[]
+  Bus           Bus        @relation(fields: [busId], references: [id])
+  Operator      Operator   @relation(fields: [operatorId], references: [id])
+  Route         Route      @relation(fields: [routeId], references: [id])
+}
+
+model User {
+  id                            String    @id
+  name                          String
+  email                         String    @unique
+  phone                         String    @unique
+  password                      String
+  role                          Role      @default(CUSTOMER)
+  createdAt                     DateTime  @default(now())
+  updatedAt                     DateTime
+  Booking_Booking_agentIdToUser Booking[] @relation("Booking_agentIdToUser")
+  Booking_Booking_userIdToUser  Booking[] @relation("Booking_userIdToUser")
+}
+
+enum BookingStatus {
+  HELD
+  PENDING
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+  OPERATOR
+  AGENT
+  DRIVER
+}
+
+enum TripStatus {
+  SCHEDULED
+  BOARDING
+  DEPARTED
+  ARRIVED
+  CANCELLED
+  DELAYED
+}
