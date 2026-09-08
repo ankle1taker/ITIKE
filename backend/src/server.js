@@ -1,33 +1,7 @@
-import express from "express";
+import app from "./app.js";
 import prisma from "./config/database.js";
 
-const app = express();
-
 const PORT = process.env.PORT || 5000;
-
-app.use(express.json());
-
-app.get("/health", async (req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-
-    res.status(200).json({
-      success: true,
-      service: "Itike API",
-      status: "healthy",
-      database: "connected",
-    });
-  } catch (error) {
-    console.error("Database health check failed:", error);
-
-    res.status(503).json({
-      success: false,
-      service: "Itike API",
-      status: "unhealthy",
-      database: "disconnected",
-    });
-  }
-});
 
 const server = app.listen(PORT, () => {
   console.log(`Itike API running on http://localhost:${PORT}`);
