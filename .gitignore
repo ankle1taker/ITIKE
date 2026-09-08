@@ -1,23 +1,11 @@
-# Dependencies
 node_modules/
-
-# Environment variables
-.env
-.env.*
-!.env.example
-
-# Logs
-*.log
-
-# Build output
-.next/
 dist/
-build/
+.env
 
-# IDE
-.vscode/
-.idea/
+src/generated/prisma
+backend/src/generated/prisma
 
-# OS
-.DS_Store
-Thumbs.db
+backend/.agents/
+backend/.claude/
+backend/.windsurf/
+backend/skills-lock.json

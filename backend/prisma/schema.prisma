@@ -7,132 +7,28 @@ datasource db {
   provider = "postgresql"
 }
 
-model Booking {
-  id                         String        @id
-  tripId                     String
-  userId                     String
-  agentId                    String?
-  totalAmount                Float
-  status                     BookingStatus @default(HELD)
-  expiresAt                  DateTime?
-  createdAt                  DateTime      @default(now())
-  updatedAt                  DateTime
-  User_Booking_agentIdToUser User?         @relation("Booking_agentIdToUser", fields: [agentId], references: [id])
-  Trip                       Trip          @relation(fields: [tripId], references: [id])
-  User_Booking_userIdToUser  User          @relation("Booking_userIdToUser", fields: [userId], references: [id])
-  BookingSeat                BookingSeat[]
-  Payment                    Payment?
-}
-
-model BookingSeat {
-  id              String  @id
-  bookingId       String
-  seatNumber      String
-  passengerName   String
-  passengerPhone  String
-  passengerIdType String?
-  passengerIdNum  String?
-  Booking         Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-}
-
-model Bus {
-  id          String   @id
-  operatorId  String
-  plateNumber String   @unique
-  busType     String
-  capacity    Int
-  seatLayout  Json
-  amenities   String[]
-  status      String   @default("ACTIVE")
-  createdAt   DateTime @default(now())
-  Operator    Operator @relation(fields: [operatorId], references: [id])
-  Trip        Trip[]
-}
-
-model Operator {
-  id        String   @id
-  name      String
-  contact   String
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  Bus       Bus[]
-  Trip      Trip[]
-}
-
-model Payment {
-  id          String        @id
-  bookingId   String        @unique
-  amount      Float
-  provider    String
-  providerRef String?
-  status      PaymentStatus @default(PENDING)
-  paidAt      DateTime?
-  createdAt   DateTime      @default(now())
-  Booking     Booking       @relation(fields: [bookingId], references: [id])
-}
-
-model Route {
-  id          String   @id
-  origin      String
-  destination String
-  distanceKm  Float
-  durationMin Int
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  Trip        Trip[]
-}
-
-model Trip {
-  id            String     @id
-  routeId       String
-  busId         String
-  operatorId    String
-  driverId      String?
-  departureTime DateTime
-  arrivalTime   DateTime
-  basePrice     Float
-  status        TripStatus @default(SCHEDULED)
-  createdAt     DateTime   @default(now())
-  Booking       Booking[]
-  Bus           Bus        @relation(fields: [busId], references: [id])
-  Operator      Operator   @relation(fields: [operatorId], references: [id])
-  Route         Route      @relation(fields: [routeId], references: [id])
-}
-
-model User {
-  id                            String    @id
-  name                          String
-  email                         String    @unique
-  phone                         String    @unique
-  password                      String
-  role                          Role      @default(CUSTOMER)
-  createdAt                     DateTime  @default(now())
-  updatedAt                     DateTime
-  Booking_Booking_agentIdToUser Booking[] @relation("Booking_agentIdToUser")
-  Booking_Booking_userIdToUser  Booking[] @relation("Booking_userIdToUser")
-}
-
-enum BookingStatus {
-  HELD
-  PENDING
-  CONFIRMED
-  CANCELLED
-  EXPIRED
-}
-
-enum PaymentStatus {
-  PENDING
-  SUCCESS
-  FAILED
-  REFUNDED
-}
-
-enum Role {
+enum UserRole {
   CUSTOMER
-  ADMIN
-  OPERATOR
-  AGENT
-  DRIVER
+  COMPANY_ADMIN
+  COMPANY_OPERATOR
+  PLATFORM_ADMIN
+}
+
+enum CompanyStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum BusStatus {
+  ACTIVE
+  MAINTENANCE
+  INACTIVE
+}
+
+enum SeatStatus {
+  ACTIVE
+  INACTIVE
 }
 
 enum TripStatus {
@@ -142,4 +38,361 @@ enum TripStatus {
   ARRIVED
   CANCELLED
   DELAYED
+}
+
+enum TripSeatStatus {
+  AVAILABLE
+  HELD
+  CONFIRMED
+  BLOCKED
+}
+
+enum BookingStatus {
+  HELD
+  PENDING_PAYMENT
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  MOBILE_MONEY
+  CARD
+}
+
+enum TicketStatus {
+  ACTIVE
+  USED
+  CANCELLED
+  EXPIRED
+}
+
+enum HoldStatus {
+  ACTIVE
+  EXPIRED
+  RELEASED
+  CONVERTED
+}
+
+enum CancellationStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+model Company {
+  id                 String        @id @default(uuid())
+  name               String
+  registrationNumber String        @unique
+  phone              String
+  email              String?       @unique
+  address            String?
+  logoUrl            String?
+  status             CompanyStatus @default(ACTIVE)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  users              User[]
+  buses              Bus[]
+  trips              Trip[]
+  cancellationPolicy CancellationPolicy?
+  auditLogs          AuditLog[]
+
+  @@index([status])
+}
+
+model User {
+  id           String   @id @default(uuid())
+  companyId    String?
+  fullName     String
+  email        String?  @unique
+  phone        String   @unique
+  passwordHash String
+  role         UserRole @default(CUSTOMER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  bookings  Booking[]  @relation("BookingCustomer")
+  auditLogs AuditLog[] @relation("AuditActor")
+
+  @@index([companyId])
+  @@index([role])
+  @@index([isActive])
+}
+
+model Bus {
+  id                 String    @id @default(uuid())
+  companyId          String
+  registrationNumber String
+  manufacturer       String?
+  model              String?
+  busType            String
+  capacity           Int
+  status             BusStatus @default(ACTIVE)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  seats   Seat[]
+  trips   Trip[]
+
+  @@unique([companyId, registrationNumber])
+  @@index([companyId])
+  @@index([status])
+}
+
+model Seat {
+  id           String     @id @default(uuid())
+  busId        String
+  seatNumber   String
+  rowNumber    Int?
+  columnNumber Int?
+  status       SeatStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  bus       Bus        @relation(fields: [busId], references: [id], onDelete: Cascade)
+  tripSeats TripSeat[]
+
+  @@unique([busId, seatNumber])
+  @@index([busId])
+}
+
+model Route {
+  id          String   @id @default(uuid())
+  origin      String
+  destination String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stops RouteStop[]
+  trips Trip[]
+
+  @@index([origin, destination])
+  @@index([isActive])
+}
+
+model RouteStop {
+  id        String   @id @default(uuid())
+  routeId   String
+  name      String
+  sequence  Int
+  createdAt DateTime @default(now())
+
+  route    Route     @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@unique([routeId, sequence])
+  @@index([routeId])
+}
+
+model Trip {
+  id            String     @id @default(uuid())
+  companyId     String
+  routeId       String
+  busId         String
+  departureTime DateTime
+  arrivalTime   DateTime?
+  basePrice     Decimal    @db.Decimal(12, 2)
+  status        TripStatus @default(SCHEDULED)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  route   Route   @relation(fields: [routeId], references: [id], onDelete: Restrict)
+  bus     Bus     @relation(fields: [busId], references: [id], onDelete: Restrict)
+
+  tripSeats TripSeat[]
+  bookings  Booking[]
+
+  @@index([companyId])
+  @@index([routeId])
+  @@index([busId])
+  @@index([departureTime])
+  @@index([status])
+}
+
+model TripSeat {
+  id        String         @id @default(uuid())
+  tripId    String
+  seatId    String
+  status    TripSeatStatus @default(AVAILABLE)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  seat Seat @relation(fields: [seatId], references: [id], onDelete: Restrict)
+
+  bookingSeat  BookingSeat?
+  bookingHolds BookingHold[]
+
+  @@unique([tripId, seatId])
+  @@index([tripId, status])
+  @@index([seatId])
+}
+
+model Booking {
+  id            String        @id @default(uuid())
+  bookingNumber String        @unique
+  tripId        String
+  customerId    String
+  dropoffStopId String?
+  status        BookingStatus @default(HELD)
+  totalAmount   Decimal       @db.Decimal(12, 2)
+  expiresAt     DateTime?
+  termsSnapshot Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  trip        Trip       @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  customer    User       @relation("BookingCustomer", fields: [customerId], references: [id], onDelete: Restrict)
+  dropoffStop RouteStop? @relation(fields: [dropoffStopId], references: [id], onDelete: Restrict)
+
+  passengers   BookingPassenger[]
+  bookingSeat  BookingSeat[]
+  holds        BookingHold[]
+  payment      Payment?
+  ticket       Ticket?
+  cancellation Cancellation?
+
+  @@index([tripId, status])
+  @@index([customerId])
+  @@index([expiresAt])
+}
+
+model BookingPassenger {
+  id        String   @id @default(uuid())
+  bookingId String
+  fullName  String
+  phone     String
+  idType    String?
+  idNumber  String?
+  createdAt DateTime @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+}
+
+model BookingSeat {
+  id          String   @id @default(uuid())
+  bookingId   String
+  tripSeatId  String   @unique
+  passengerId String
+  amount      Decimal  @db.Decimal(12, 2)
+  createdAt   DateTime @default(now())
+
+  booking  Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  tripSeat TripSeat @relation(fields: [tripSeatId], references: [id], onDelete: Restrict)
+
+  @@index([bookingId])
+  @@index([passengerId])
+}
+
+model BookingHold {
+  id         String     @id @default(uuid())
+  bookingId  String
+  tripSeatId String
+  status     HoldStatus @default(ACTIVE)
+  expiresAt  DateTime
+  createdAt  DateTime   @default(now())
+  releasedAt DateTime?
+
+  booking  Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  tripSeat TripSeat @relation(fields: [tripSeatId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([tripSeatId, status])
+  @@index([expiresAt])
+}
+
+model Payment {
+  id                String        @id @default(uuid())
+  bookingId         String        @unique
+  amount            Decimal       @db.Decimal(12, 2)
+  method            PaymentMethod
+  provider          String
+  providerReference String?       @unique
+  status            PaymentStatus @default(PENDING)
+  paidAt            DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@index([status])
+}
+
+model Ticket {
+  id           String       @id @default(uuid())
+  bookingId    String       @unique
+  ticketNumber String       @unique
+  qrCodeValue  String       @unique
+  status       TicketStatus @default(ACTIVE)
+  issuedAt     DateTime     @default(now())
+  usedAt       DateTime?
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@index([status])
+}
+
+model CancellationPolicy {
+  id                 String   @id @default(uuid())
+  companyId          String   @unique
+  moreThan24HoursPct Decimal  @db.Decimal(5, 2)
+  twelveTo24HoursPct Decimal  @db.Decimal(5, 2)
+  lessThan12HoursPct Decimal  @db.Decimal(5, 2)
+  afterDeparturePct  Decimal  @db.Decimal(5, 2)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model Cancellation {
+  id           String             @id @default(uuid())
+  bookingId    String             @unique
+  status       CancellationStatus @default(REQUESTED)
+  reason       String?
+  refundAmount Decimal            @db.Decimal(12, 2)
+  requestedAt  DateTime           @default(now())
+  processedAt  DateTime?
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@index([status])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  companyId  String?
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  actor   User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([actorId])
+  @@index([entityType, entityId])
 }
