@@ -10,7 +10,8 @@
   "prisma:generate": "prisma generate",
   "prisma:migrate": "prisma migrate dev",
   "prisma:studio": "prisma studio",
-  "admin:create": "node scripts/create-platform-admin.js"
+  "admin:create": "node scripts/create-platform-admin.js",
+  "company-admin:create": "node scripts/create-company-admin.js"
 },
   "keywords": [
     "itike",

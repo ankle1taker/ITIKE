@@ -2,9 +2,9 @@ import express from "express";
 import prisma from "./config/database.js";
 import authRoutes from "./routes/auth.routes.js";
 import platformRoutes from "./routes/platform.routes.js";
+import companyRoutes from "./routes/company.routes.js";
 
 const app = express();
-
 
 app.use(express.json());
 
@@ -19,7 +19,10 @@ app.get("/health", async (req, res) => {
       database: "connected",
     });
   } catch (error) {
-   console.error("Database health check failed:", error);
+    console.error(
+      "Database health check failed:",
+      error,
+    );
 
     res.status(503).json({
       success: false,
@@ -31,7 +34,11 @@ app.get("/health", async (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+
 app.use("/api/platform", platformRoutes);
+
+app.use("/api/company", companyRoutes);
+
 app.use((error, req, res, next) => {
   console.error(error);
 
@@ -43,7 +50,7 @@ app.use((error, req, res, next) => {
     });
   }
 
- const statusCode = error.statusCode || 500;
+  const statusCode = error.statusCode || 500;
 
   res.status(statusCode).json({
     success: false,
