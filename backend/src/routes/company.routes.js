@@ -1,7 +1,4 @@
 import { Router } from "express";
-import { authenticate } from "../middleware/auth.middleware.js";
-import { authorizeRoles } from "../middleware/role.middleware.js";
-import { requireCompany } from "../middleware/tenant.middleware.js";
 import {
   create as createBus,
   list as listBuses,
@@ -16,9 +13,20 @@ import {
   update as updateSeat,
   updateStatus as updateSeatStatus,
 } from "../controllers/seat.controller.js";
+import {
+  create as createBusLayout,
+  list as listBusLayouts,
+  getById as getBusLayoutById,
+  update as updateBusLayout,
+  updateStatus as updateBusLayoutStatus,
+} from "../controllers/busLayout.controller.js";
+import { authenticate } from "../middleware/auth.middleware.js";
+import { authorizeRoles } from "../middleware/role.middleware.js";
+import { requireCompany } from "../middleware/company.middleware.js";
 
 const router = Router();
 
+// ---------- Buses ----------
 router.post(
   "/buses",
   authenticate,
@@ -30,10 +38,7 @@ router.post(
 router.get(
   "/buses",
   authenticate,
-  authorizeRoles(
-    "COMPANY_ADMIN",
-    "COMPANY_OPERATOR",
-  ),
+  authorizeRoles("COMPANY_ADMIN", "STAFF"),
   requireCompany,
   listBuses,
 );
@@ -41,10 +46,7 @@ router.get(
 router.get(
   "/buses/:id",
   authenticate,
-  authorizeRoles(
-    "COMPANY_ADMIN",
-    "COMPANY_OPERATOR",
-  ),
+  authorizeRoles("COMPANY_ADMIN", "STAFF"),
   requireCompany,
   getBusById,
 );
@@ -65,6 +67,7 @@ router.patch(
   updateBusStatus,
 );
 
+// ---------- Seats ----------
 router.post(
   "/buses/:busId/seats",
   authenticate,
@@ -76,10 +79,7 @@ router.post(
 router.get(
   "/buses/:busId/seats",
   authenticate,
-  authorizeRoles(
-    "COMPANY_ADMIN",
-    "COMPANY_OPERATOR",
-  ),
+  authorizeRoles("COMPANY_ADMIN", "STAFF"),
   requireCompany,
   listSeats,
 );
@@ -87,10 +87,7 @@ router.get(
 router.get(
   "/buses/:busId/seats/:id",
   authenticate,
-  authorizeRoles(
-    "COMPANY_ADMIN",
-    "COMPANY_OPERATOR",
-  ),
+  authorizeRoles("COMPANY_ADMIN", "STAFF"),
   requireCompany,
   getSeatById,
 );
@@ -109,6 +106,47 @@ router.patch(
   authorizeRoles("COMPANY_ADMIN"),
   requireCompany,
   updateSeatStatus,
+);
+
+// ---------- Bus Layouts ----------
+router.post(
+  "/bus-layouts",
+  authenticate,
+  authorizeRoles("COMPANY_ADMIN"),
+  requireCompany,
+  createBusLayout,
+);
+
+router.get(
+  "/bus-layouts",
+  authenticate,
+  authorizeRoles("COMPANY_ADMIN", "STAFF"),
+  requireCompany,
+  listBusLayouts,
+);
+
+router.get(
+  "/bus-layouts/:id",
+  authenticate,
+  authorizeRoles("COMPANY_ADMIN", "STAFF"),
+  requireCompany,
+  getBusLayoutById,
+);
+
+router.patch(
+  "/bus-layouts/:id",
+  authenticate,
+  authorizeRoles("COMPANY_ADMIN"),
+  requireCompany,
+  updateBusLayout,
+);
+
+router.patch(
+  "/bus-layouts/:id/status",
+  authenticate,
+  authorizeRoles("COMPANY_ADMIN"),
+  requireCompany,
+  updateBusLayoutStatus,
 );
 
 export default router;
