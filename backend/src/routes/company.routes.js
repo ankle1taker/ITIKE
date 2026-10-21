@@ -3,12 +3,19 @@ import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
 import { requireCompany } from "../middleware/tenant.middleware.js";
 import {
-  create,
-  list,
-  getById,
-  update,
-  updateStatus,
+  create as createBus,
+  list as listBuses,
+  getById as getBusById,
+  update as updateBus,
+  updateStatus as updateBusStatus,
 } from "../controllers/bus.controller.js";
+import {
+  create as createSeat,
+  list as listSeats,
+  getById as getSeatById,
+  update as updateSeat,
+  updateStatus as updateSeatStatus,
+} from "../controllers/seat.controller.js";
 
 const router = Router();
 
@@ -17,7 +24,7 @@ router.post(
   authenticate,
   authorizeRoles("COMPANY_ADMIN"),
   requireCompany,
-  create,
+  createBus,
 );
 
 router.get(
@@ -28,7 +35,7 @@ router.get(
     "COMPANY_OPERATOR",
   ),
   requireCompany,
-  list,
+  listBuses,
 );
 
 router.get(
@@ -39,7 +46,7 @@ router.get(
     "COMPANY_OPERATOR",
   ),
   requireCompany,
-  getById,
+  getBusById,
 );
 
 router.patch(
@@ -47,7 +54,7 @@ router.patch(
   authenticate,
   authorizeRoles("COMPANY_ADMIN"),
   requireCompany,
-  update,
+  updateBus,
 );
 
 router.patch(
@@ -55,7 +62,53 @@ router.patch(
   authenticate,
   authorizeRoles("COMPANY_ADMIN"),
   requireCompany,
-  updateStatus,
+  updateBusStatus,
+);
+
+router.post(
+  "/buses/:busId/seats",
+  authenticate,
+  authorizeRoles("COMPANY_ADMIN"),
+  requireCompany,
+  createSeat,
+);
+
+router.get(
+  "/buses/:busId/seats",
+  authenticate,
+  authorizeRoles(
+    "COMPANY_ADMIN",
+    "COMPANY_OPERATOR",
+  ),
+  requireCompany,
+  listSeats,
+);
+
+router.get(
+  "/buses/:busId/seats/:id",
+  authenticate,
+  authorizeRoles(
+    "COMPANY_ADMIN",
+    "COMPANY_OPERATOR",
+  ),
+  requireCompany,
+  getSeatById,
+);
+
+router.patch(
+  "/buses/:busId/seats/:id",
+  authenticate,
+  authorizeRoles("COMPANY_ADMIN"),
+  requireCompany,
+  updateSeat,
+);
+
+router.patch(
+  "/buses/:busId/seats/:id/status",
+  authenticate,
+  authorizeRoles("COMPANY_ADMIN"),
+  requireCompany,
+  updateSeatStatus,
 );
 
 export default router;

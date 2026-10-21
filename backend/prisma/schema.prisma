@@ -26,6 +26,21 @@ enum BusStatus {
   INACTIVE
 }
 
+enum BusLayoutType {
+  TWO_PLUS_TWO
+  TWO_PLUS_ONE
+  THREE_PLUS_TWO
+  THREE_PLUS_ONE
+  CUSTOM
+}
+
+enum SeatType {
+  REGULAR
+  PREMIUM
+  VIP
+  ACCESSIBLE
+}
+
 enum SeatStatus {
   ACTIVE
   INACTIVE
@@ -105,6 +120,7 @@ model Company {
 
   users              User[]
   buses              Bus[]
+  busLayouts         BusLayout[]
   trips              Trip[]
   cancellationPolicy CancellationPolicy?
   auditLogs          AuditLog[]
@@ -134,9 +150,31 @@ model User {
   @@index([isActive])
 }
 
+model BusLayout {
+  id            String        @id @default(uuid())
+  companyId     String
+  name          String
+  code          String?
+  layoutType    BusLayoutType @default(CUSTOM)
+  rowCount      Int
+  columnCount   Int
+  configuration Json?
+  isActive      Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  buses   Bus[]
+
+  @@unique([companyId, code])
+  @@index([companyId])
+  @@index([companyId, isActive])
+}
+
 model Bus {
   id                 String    @id @default(uuid())
   companyId          String
+  layoutId           String?
   registrationNumber String
   manufacturer       String?
   model              String?
@@ -146,12 +184,14 @@ model Bus {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  company Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  layout  BusLayout? @relation(fields: [layoutId], references: [id], onDelete: Restrict)
   seats   Seat[]
   trips   Trip[]
 
   @@unique([companyId, registrationNumber])
   @@index([companyId])
+  @@index([companyId, layoutId])
   @@index([status])
 }
 
@@ -161,7 +201,10 @@ model Seat {
   seatNumber   String
   rowNumber    Int?
   columnNumber Int?
+  floorNumber  Int        @default(1)
+  seatType     SeatType   @default(REGULAR)
   status       SeatStatus @default(ACTIVE)
+  isBookable   Boolean    @default(true)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
@@ -170,6 +213,7 @@ model Seat {
 
   @@unique([busId, seatNumber])
   @@index([busId])
+  @@index([busId, status])
 }
 
 model Route {

@@ -1,3 +1,4 @@
+
 import prisma from "../config/database.js";
 
 const ALLOWED_STATUSES = [
@@ -6,18 +7,18 @@ const ALLOWED_STATUSES = [
   "INACTIVE",
 ];
 
+const createError = (message, statusCode) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+};
+
 const normalizeRegistrationNumber = (value) => {
   if (typeof value !== "string") {
     return value;
   }
 
   return value.trim().toUpperCase();
-};
-
-const createError = (message, statusCode) => {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
 };
 
 const validateId = (id, fieldName = "ID") => {
@@ -53,15 +54,76 @@ const validateCapacity = (capacity) => {
 
 const validateStatus = (status) => {
   if (!ALLOWED_STATUSES.includes(status)) {
+    throw createError("Invalid bus status.", 400);
+  }
+};
+
+const validateLayoutId = (layoutId) => {
+  if (
+    layoutId !== undefined &&
+    layoutId !== null &&
+    (typeof layoutId !== "string" || !layoutId.trim())
+  ) {
+    throw createError("Invalid bus layout ID.", 400);
+  }
+};
+
+const handleUniqueConstraintError = (error, message) => {
+  if (error?.code === "P2002") {
+    throw createError(message, 409);
+  }
+
+  throw error;
+};
+
+/*
+ * Locking the bus row serializes capacity-sensitive operations.
+ * Seat creation/reactivation must acquire this same lock before
+ * counting active seats.
+ */
+const lockBusRow = async (tx, id, companyId) => {
+  await tx.$queryRaw`
+    SELECT "id"
+    FROM "Bus"
+    WHERE "id" = ${id}
+      AND "companyId" = ${companyId}
+    FOR UPDATE
+  `;
+};
+
+const getActiveCompanyLayout = async (
+  tx,
+  layoutId,
+  companyId,
+) => {
+  if (layoutId === undefined || layoutId === null) {
+    return null;
+  }
+
+  const layout = await tx.busLayout.findFirst({
+    where: {
+      id: layoutId,
+      companyId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!layout) {
     throw createError(
-      "Invalid bus status.",
+      "Bus layout not found, inactive, or not owned by your company.",
       400,
     );
   }
+
+  return layout;
 };
 
 export const createBus = async ({
   companyId,
+  layoutId,
   registrationNumber,
   manufacturer,
   model,
@@ -71,19 +133,20 @@ export const createBus = async ({
 }) => {
   validateCompanyId(companyId);
   validateActorId(actorId);
+  validateLayoutId(layoutId);
 
-  if (!registrationNumber) {
-    throw createError(
-      "Registration number is required.",
-      400,
-    );
+  if (
+    typeof registrationNumber !== "string" ||
+    !registrationNumber.trim()
+  ) {
+    throw createError("Registration number is required.", 400);
   }
 
-  if (!busType) {
-    throw createError(
-      "Bus type is required.",
-      400,
-    );
+  if (
+    typeof busType !== "string" ||
+    !busType.trim()
+  ) {
+    throw createError("Bus type is required.", 400);
   }
 
   validateCapacity(capacity);
@@ -91,35 +154,21 @@ export const createBus = async ({
   const normalizedRegistrationNumber =
     normalizeRegistrationNumber(registrationNumber);
 
-  const existingBus = await prisma.bus.findUnique({
-    where: {
-      companyId_registrationNumber: {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const layout = await getActiveCompanyLayout(
+        tx,
+        layoutId,
         companyId,
-        registrationNumber:
-          normalizedRegistrationNumber,
-      },
-    },
-    select: {
-      id: true,
-    },
-  });
+      );
 
-  if (existingBus) {
-    throw createError(
-      "A bus with this registration number already exists in your company.",
-      409,
-    );
-  }
-
-  const result = await prisma.$transaction(
-    async (tx) => {
       const bus = await tx.bus.create({
         data: {
           companyId,
-          registrationNumber:
-            normalizedRegistrationNumber,
-          manufacturer: manufacturer || null,
-          model: model || null,
+          layoutId: layout?.id ?? null,
+          registrationNumber: normalizedRegistrationNumber,
+          manufacturer: manufacturer?.trim() || null,
+          model: model?.trim() || null,
           busType: busType.trim(),
           capacity,
         },
@@ -133,19 +182,22 @@ export const createBus = async ({
           entityType: "Bus",
           entityId: bus.id,
           metadata: {
-            registrationNumber:
-              bus.registrationNumber,
+            registrationNumber: bus.registrationNumber,
             busType: bus.busType,
             capacity: bus.capacity,
+            layoutId: bus.layoutId,
           },
         },
       });
 
       return bus;
-    },
-  );
-
-  return result;
+    });
+  } catch (error) {
+    handleUniqueConstraintError(
+      error,
+      "A bus with this registration number or another unique value already exists in your company.",
+    );
+  }
 };
 
 export const listBuses = async ({
@@ -158,21 +210,11 @@ export const listBuses = async ({
   validateCompanyId(companyId);
 
   if (!Number.isInteger(page) || page < 1) {
-    throw createError(
-      "Page must be a positive integer.",
-      400,
-    );
+    throw createError("Page must be a positive integer.", 400);
   }
 
-  if (
-    !Number.isInteger(limit) ||
-    limit < 1 ||
-    limit > 100
-  ) {
-    throw createError(
-      "Limit must be between 1 and 100.",
-      400,
-    );
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw createError("Limit must be between 1 and 100.", 400);
   }
 
   if (status) {
@@ -180,68 +222,66 @@ export const listBuses = async ({
   }
 
   const skip = (page - 1) * limit;
-
-  const where = {
-    companyId,
-  };
+  const where = { companyId };
 
   if (status) {
     where.status = status;
   }
 
-  if (search) {
+  if (search?.trim()) {
+    const searchTerm = search.trim();
+
     where.OR = [
       {
         registrationNumber: {
-          contains: search.trim(),
+          contains: searchTerm,
           mode: "insensitive",
         },
       },
       {
         manufacturer: {
-          contains: search.trim(),
+          contains: searchTerm,
           mode: "insensitive",
         },
       },
       {
         model: {
-          contains: search.trim(),
+          contains: searchTerm,
           mode: "insensitive",
         },
       },
       {
         busType: {
-          contains: search.trim(),
+          contains: searchTerm,
           mode: "insensitive",
         },
       },
     ];
   }
 
-  const [buses, total] =
-    await prisma.$transaction([
-      prisma.bus.findMany({
-        where,
-        orderBy: [
-          {
-            createdAt: "desc",
+  const [buses, total] = await prisma.$transaction([
+    prisma.bus.findMany({
+      where,
+      orderBy: [
+        { createdAt: "desc" },
+        { id: "desc" },
+      ],
+      skip,
+      take: limit,
+      include: {
+        layout: {
+          select: {
+            id: true,
+            name: true,
+            layoutType: true,
           },
-          {
-            id: "desc",
-          },
-        ],
-        skip,
-        take: limit,
-      }),
-      prisma.bus.count({
-        where,
-      }),
-    ]);
+        },
+      },
+    }),
+    prisma.bus.count({ where }),
+  ]);
 
-  const totalPages =
-    total === 0
-      ? 0
-      : Math.ceil(total / limit);
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
   return {
     buses,
@@ -256,10 +296,7 @@ export const listBuses = async ({
   };
 };
 
-export const getBusById = async ({
-  id,
-  companyId,
-}) => {
+export const getBusById = async ({ id, companyId }) => {
   validateId(id, "Bus ID");
   validateCompanyId(companyId);
 
@@ -269,6 +306,13 @@ export const getBusById = async ({
       companyId,
     },
     include: {
+      layout: {
+        select: {
+          id: true,
+          name: true,
+          layoutType: true,
+        },
+      },
       _count: {
         select: {
           seats: true,
@@ -279,10 +323,7 @@ export const getBusById = async ({
   });
 
   if (!bus) {
-    throw createError(
-      "Bus not found.",
-      404,
-    );
+    throw createError("Bus not found.", 404);
   }
 
   return bus;
@@ -292,6 +333,7 @@ export const updateBus = async ({
   id,
   companyId,
   actorId,
+  layoutId,
   registrationNumber,
   manufacturer,
   model,
@@ -301,82 +343,31 @@ export const updateBus = async ({
   validateId(id, "Bus ID");
   validateCompanyId(companyId);
   validateActorId(actorId);
-
-  const existingBus =
-    await prisma.bus.findFirst({
-      where: {
-        id,
-        companyId,
-      },
-    });
-
-  if (!existingBus) {
-    throw createError(
-      "Bus not found.",
-      404,
-    );
-  }
+  validateLayoutId(layoutId);
 
   const data = {};
 
   if (registrationNumber !== undefined) {
-    const normalizedRegistrationNumber =
-      normalizeRegistrationNumber(
-        registrationNumber,
-      );
+    const normalized = normalizeRegistrationNumber(registrationNumber);
 
-    if (!normalizedRegistrationNumber) {
-      throw createError(
-        "Registration number cannot be empty.",
-        400,
-      );
+    if (!normalized) {
+      throw createError("Registration number cannot be empty.", 400);
     }
 
-    const duplicate =
-      await prisma.bus.findFirst({
-        where: {
-          companyId,
-          registrationNumber:
-            normalizedRegistrationNumber,
-          NOT: {
-            id,
-          },
-        },
-        select: {
-          id: true,
-        },
-      });
-
-    if (duplicate) {
-      throw createError(
-        "A bus with this registration number already exists in your company.",
-        409,
-      );
-    }
-
-    data.registrationNumber =
-      normalizedRegistrationNumber;
+    data.registrationNumber = normalized;
   }
 
   if (manufacturer !== undefined) {
-    data.manufacturer =
-      manufacturer?.trim() || null;
+    data.manufacturer = manufacturer?.trim() || null;
   }
 
   if (model !== undefined) {
-    data.model =
-      model?.trim() || null;
+    data.model = model?.trim() || null;
   }
 
   if (busType !== undefined) {
-    if (
-      typeof busType !== "string" ||
-      !busType.trim()
-    ) {
-      throw createError(
-        "Bus type cannot be empty.",
-        400,
-      );
+    if (typeof busType !== "string" || !busType.trim()) {
+      throw createError("Bus type cannot be empty.", 400);
     }
 
     data.busType = busType.trim();
@@ -387,6 +378,10 @@ export const updateBus = async ({
     data.capacity = capacity;
   }
 
+  if (layoutId !== undefined) {
+    data.layoutId = layoutId;
+  }
+
   if (Object.keys(data).length === 0) {
     throw createError(
       "At least one bus field must be provided.",
@@ -394,12 +389,69 @@ export const updateBus = async ({
     );
   }
 
-  const result = await prisma.$transaction(
-    async (tx) => {
-      const bus = await tx.bus.update({
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await lockBusRow(tx, id, companyId);
+
+      const existingBus = await tx.bus.findFirst({
         where: {
           id,
+          companyId,
         },
+        select: {
+          id: true,
+          capacity: true,
+          status: true,
+        },
+      });
+
+      if (!existingBus) {
+        throw createError("Bus not found.", 404);
+      }
+
+      if (data.registrationNumber !== undefined) {
+        const duplicate = await tx.bus.findFirst({
+          where: {
+            companyId,
+            registrationNumber: data.registrationNumber,
+            NOT: { id },
+          },
+          select: { id: true },
+        });
+
+        if (duplicate) {
+          throw createError(
+            "A bus with this registration number already exists in your company.",
+            409,
+          );
+        }
+      }
+
+      if (layoutId !== undefined && layoutId !== null) {
+        await getActiveCompanyLayout(tx, layoutId, companyId);
+      }
+
+      if (
+        data.capacity !== undefined &&
+        data.capacity !== existingBus.capacity
+      ) {
+        const activeSeatCount = await tx.seat.count({
+          where: {
+            busId: id,
+            status: "ACTIVE",
+          },
+        });
+
+        if (data.capacity < activeSeatCount) {
+          throw createError(
+            `Capacity cannot be reduced below the ${activeSeatCount} active seats configured on this bus.`,
+            409,
+          );
+        }
+      }
+
+      const bus = await tx.bus.update({
+        where: { id },
         data,
       });
 
@@ -417,10 +469,13 @@ export const updateBus = async ({
       });
 
       return bus;
-    },
-  );
-
-  return result;
+    });
+  } catch (error) {
+    handleUniqueConstraintError(
+      error,
+      "A bus with this registration number or another unique value already exists in your company.",
+    );
+  }
 };
 
 export const updateBusStatus = async ({
@@ -434,8 +489,10 @@ export const updateBusStatus = async ({
   validateActorId(actorId);
   validateStatus(status);
 
-  const existingBus =
-    await prisma.bus.findFirst({
+  return prisma.$transaction(async (tx) => {
+    await lockBusRow(tx, id, companyId);
+
+    const existingBus = await tx.bus.findFirst({
       where: {
         id,
         companyId,
@@ -447,49 +504,33 @@ export const updateBusStatus = async ({
       },
     });
 
-  if (!existingBus) {
-    throw createError(
-      "Bus not found.",
-      404,
-    );
-  }
+    if (!existingBus) {
+      throw createError("Bus not found.", 404);
+    }
 
-  if (existingBus.status === status) {
-    throw createError(
-      `Bus is already ${status}.`,
-      409,
-    );
-  }
+    if (existingBus.status === status) {
+      throw createError(`Bus is already ${status}.`, 409);
+    }
 
-  const result = await prisma.$transaction(
-    async (tx) => {
-      const bus = await tx.bus.update({
-        where: {
-          id,
+    const bus = await tx.bus.update({
+      where: { id },
+      data: { status },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        companyId,
+        actorId,
+        action: "BUS_STATUS_CHANGED",
+        entityType: "Bus",
+        entityId: bus.id,
+        metadata: {
+          previousStatus: existingBus.status,
+          newStatus: status,
         },
-        data: {
-          status,
-        },
-      });
+      },
+    });
 
-      await tx.auditLog.create({
-        data: {
-          companyId,
-          actorId,
-          action: "BUS_STATUS_CHANGED",
-          entityType: "Bus",
-          entityId: bus.id,
-          metadata: {
-            previousStatus:
-              existingBus.status,
-            newStatus: status,
-          },
-        },
-      });
-
-      return bus;
-    },
-  );
-
-  return result;
+    return bus;
+  });
 };
