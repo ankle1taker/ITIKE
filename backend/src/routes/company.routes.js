@@ -28,6 +28,13 @@ import {
   updateStatus as updateStaffStatus,
   resetPassword as resetStaffPassword,
 } from "../controllers/staff.controller.js";
+import {
+  create as createTrip,
+  list as listTrips,
+  getById as getTripById,
+  update as updateTrip,
+  updateStatus as updateTripStatus,
+} from "../controllers/trip.controller.js";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
 import { requireCompany } from "../middleware/tenant.middleware.js";
@@ -62,5 +69,12 @@ router.get("/staff/:id", authenticate, authorizeRoles("COMPANY_ADMIN"), requireC
 router.patch("/staff/:id", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, updateStaff);
 router.patch("/staff/:id/status", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, updateStaffStatus);
 router.patch("/staff/:id/password", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, resetStaffPassword);
+
+// ---------- Trips ----------
+router.post("/trips", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, createTrip);
+router.get("/trips", authenticate, authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"), requireCompany, listTrips);
+router.get("/trips/:id", authenticate, authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"), requireCompany, getTripById);
+router.patch("/trips/:id", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, updateTrip);
+router.patch("/trips/:id/status", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, updateTripStatus);
 
 export default router;
