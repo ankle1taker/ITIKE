@@ -1,4 +1,5 @@
 import prisma from "../config/database.js";
+import { reconcileTripSeatsInTx } from "./tripSeat.service.js";
 
 const createError = (message, statusCode) => {
   const error = new Error(message);
@@ -150,6 +151,18 @@ export const createTrip = async ({
       );
     }
 
+    // Require the bus to have active seats BEFORE creating the trip.
+    const activeSeatCount = await tx.seat.count({
+      where: { busId, status: "ACTIVE" },
+    });
+
+    if (activeSeatCount === 0) {
+      throw createError(
+        "Bus has no active seats configured. Configure seats before scheduling trips.",
+        409,
+      );
+    }
+
     await assertNoBusOverlap(tx, busId, dep, arr);
 
     const trip = await tx.trip.create({
@@ -172,6 +185,13 @@ export const createTrip = async ({
       },
     });
 
+    // Populate TripSeat inventory from the bus's active seats.
+    const seatInit = await reconcileTripSeatsInTx(tx, {
+      tripId: trip.id,
+      busId: trip.busId,
+      companyId,
+    });
+
     await tx.auditLog.create({
       data: {
         companyId,
@@ -185,6 +205,7 @@ export const createTrip = async ({
           departureTime: trip.departureTime.toISOString(),
           arrivalTime: trip.arrivalTime.toISOString(),
           basePrice: trip.basePrice.toString(),
+          tripSeatsCreated: seatInit.added,
         },
       },
     });

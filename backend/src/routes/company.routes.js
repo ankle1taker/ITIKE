@@ -35,6 +35,10 @@ import {
   update as updateTrip,
   updateStatus as updateTripStatus,
 } from "../controllers/trip.controller.js";
+import {
+  initialize as initializeTripSeats,
+  list as listTripSeats,
+} from "../controllers/tripSeat.controller.js";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
 import { requireCompany } from "../middleware/tenant.middleware.js";
@@ -76,5 +80,9 @@ router.get("/trips", authenticate, authorizeRoles("COMPANY_ADMIN", "COMPANY_OPER
 router.get("/trips/:id", authenticate, authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"), requireCompany, getTripById);
 router.patch("/trips/:id", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, updateTrip);
 router.patch("/trips/:id/status", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, updateTripStatus);
+
+// ---------- Trip seats (inventory) ----------
+router.post("/trips/:id/initialize-seats", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, initializeTripSeats);
+router.get("/trips/:id/seats", authenticate, authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"), requireCompany, listTripSeats);
 
 export default router;
