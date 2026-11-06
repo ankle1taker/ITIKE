@@ -2,48 +2,100 @@ import { Router } from "express";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
 import {
-  create,
-  list,
-  getById,
-  update,
-  updateStatus,
+  create as createCompany,
+  list as listCompanies,
+  getById as getCompanyById,
+  update as updateCompany,
+  updateStatus as updateCompanyStatus,
 } from "../controllers/company.controller.js";
+import {
+  create as createRoute,
+  list as listRoutes,
+  getById as getRouteById,
+  update as updateRoute,
+  updateStatus as updateRouteStatus,
+  replaceStops as replaceRouteStops,
+} from "../controllers/route.controller.js";
 
 const router = Router();
 
+// ---------- Companies ----------
 router.post(
   "/companies",
   authenticate,
   authorizeRoles("PLATFORM_ADMIN"),
-  create,
+  createCompany,
 );
 
 router.get(
   "/companies",
   authenticate,
   authorizeRoles("PLATFORM_ADMIN"),
-  list,
+  listCompanies,
 );
 
 router.get(
   "/companies/:id",
   authenticate,
   authorizeRoles("PLATFORM_ADMIN"),
-  getById,
+  getCompanyById,
 );
 
 router.patch(
   "/companies/:id",
   authenticate,
   authorizeRoles("PLATFORM_ADMIN"),
-  update,
+  updateCompany,
 );
 
 router.patch(
   "/companies/:id/status",
   authenticate,
   authorizeRoles("PLATFORM_ADMIN"),
-  updateStatus,
+  updateCompanyStatus,
+);
+
+// ---------- Routes ----------
+router.post(
+  "/routes",
+  authenticate,
+  authorizeRoles("PLATFORM_ADMIN"),
+  createRoute,
+);
+
+router.get(
+  "/routes",
+  authenticate,
+  authorizeRoles("PLATFORM_ADMIN"),
+  listRoutes,
+);
+
+router.get(
+  "/routes/:id",
+  authenticate,
+  authorizeRoles("PLATFORM_ADMIN"),
+  getRouteById,
+);
+
+router.patch(
+  "/routes/:id",
+  authenticate,
+  authorizeRoles("PLATFORM_ADMIN"),
+  updateRoute,
+);
+
+router.patch(
+  "/routes/:id/status",
+  authenticate,
+  authorizeRoles("PLATFORM_ADMIN"),
+  updateRouteStatus,
+);
+
+router.put(
+  "/routes/:id/stops",
+  authenticate,
+  authorizeRoles("PLATFORM_ADMIN"),
+  replaceRouteStops,
 );
 
 export default router;
