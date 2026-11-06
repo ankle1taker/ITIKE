@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-const LAYOUT_TYPES = ["STANDARD", "VIP", "SLEEPER", "CUSTOM"];
+const LAYOUT_TYPES = [
+  "TWO_PLUS_TWO",
+  "TWO_PLUS_ONE",
+  "THREE_PLUS_TWO",
+  "THREE_PLUS_ONE",
+  "CUSTOM",
+];
 
 export const createBusLayoutSchema = z.object({
   name: z
