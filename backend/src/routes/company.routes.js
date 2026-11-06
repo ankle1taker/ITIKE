@@ -22,7 +22,7 @@ import {
 } from "../controllers/busLayout.controller.js";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
-import { requireCompany } from "../middleware/company.middleware.js";
+import { requireCompany } from "../middleware/tenant.middleware.js";
 
 const router = Router();
 
@@ -38,7 +38,7 @@ router.post(
 router.get(
   "/buses",
   authenticate,
-  authorizeRoles("COMPANY_ADMIN", "STAFF"),
+  authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"),
   requireCompany,
   listBuses,
 );
@@ -46,7 +46,7 @@ router.get(
 router.get(
   "/buses/:id",
   authenticate,
-  authorizeRoles("COMPANY_ADMIN", "STAFF"),
+  authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"),
   requireCompany,
   getBusById,
 );
@@ -79,7 +79,7 @@ router.post(
 router.get(
   "/buses/:busId/seats",
   authenticate,
-  authorizeRoles("COMPANY_ADMIN", "STAFF"),
+  authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"),
   requireCompany,
   listSeats,
 );
@@ -87,7 +87,7 @@ router.get(
 router.get(
   "/buses/:busId/seats/:id",
   authenticate,
-  authorizeRoles("COMPANY_ADMIN", "STAFF"),
+  authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"),
   requireCompany,
   getSeatById,
 );
@@ -120,7 +120,7 @@ router.post(
 router.get(
   "/bus-layouts",
   authenticate,
-  authorizeRoles("COMPANY_ADMIN", "STAFF"),
+  authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"),
   requireCompany,
   listBusLayouts,
 );
@@ -128,7 +128,7 @@ router.get(
 router.get(
   "/bus-layouts/:id",
   authenticate,
-  authorizeRoles("COMPANY_ADMIN", "STAFF"),
+  authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"),
   requireCompany,
   getBusLayoutById,
 );
