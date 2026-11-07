@@ -1,11 +1,6 @@
-
 import prisma from "../config/database.js";
 
-const ALLOWED_STATUSES = [
-  "ACTIVE",
-  "MAINTENANCE",
-  "INACTIVE",
-];
+const ALLOWED_STATUSES = ["ACTIVE", "MAINTENANCE", "INACTIVE"];
 
 const createError = (message, statusCode) => {
   const error = new Error(message);
@@ -14,10 +9,7 @@ const createError = (message, statusCode) => {
 };
 
 const normalizeRegistrationNumber = (value) => {
-  if (typeof value !== "string") {
-    return value;
-  }
-
+  if (typeof value !== "string") return value;
   return value.trim().toUpperCase();
 };
 
@@ -43,12 +35,8 @@ const validateCapacity = (capacity) => {
   if (!Number.isInteger(capacity)) {
     throw createError("Bus capacity must be an integer.", 400);
   }
-
   if (capacity < 1 || capacity > 200) {
-    throw createError(
-      "Bus capacity must be between 1 and 200.",
-      400,
-    );
+    throw createError("Bus capacity must be between 1 and 200.", 400);
   }
 };
 
@@ -68,19 +56,13 @@ const validateLayoutId = (layoutId) => {
   }
 };
 
-const handleUniqueConstraintError = (error, message) => {
+const rethrowIfUniqueConstraint = (error, message) => {
   if (error?.code === "P2002") {
     throw createError(message, 409);
   }
-
   throw error;
 };
 
-/*
- * Locking the bus row serializes capacity-sensitive operations.
- * Seat creation/reactivation must acquire this same lock before
- * counting active seats.
- */
 const lockBusRow = async (tx, id, companyId) => {
   await tx.$queryRaw`
     SELECT "id"
@@ -91,24 +73,12 @@ const lockBusRow = async (tx, id, companyId) => {
   `;
 };
 
-const getActiveCompanyLayout = async (
-  tx,
-  layoutId,
-  companyId,
-) => {
-  if (layoutId === undefined || layoutId === null) {
-    return null;
-  }
+const getActiveCompanyLayout = async (tx, layoutId, companyId) => {
+  if (layoutId === undefined || layoutId === null) return null;
 
   const layout = await tx.busLayout.findFirst({
-    where: {
-      id: layoutId,
-      companyId,
-      isActive: true,
-    },
-    select: {
-      id: true,
-    },
+    where: { id: layoutId, companyId, isActive: true },
+    select: { id: true },
   });
 
   if (!layout) {
@@ -135,17 +105,10 @@ export const createBus = async ({
   validateActorId(actorId);
   validateLayoutId(layoutId);
 
-  if (
-    typeof registrationNumber !== "string" ||
-    !registrationNumber.trim()
-  ) {
+  if (typeof registrationNumber !== "string" || !registrationNumber.trim()) {
     throw createError("Registration number is required.", 400);
   }
-
-  if (
-    typeof busType !== "string" ||
-    !busType.trim()
-  ) {
+  if (typeof busType !== "string" || !busType.trim()) {
     throw createError("Bus type is required.", 400);
   }
 
@@ -156,11 +119,7 @@ export const createBus = async ({
 
   try {
     return await prisma.$transaction(async (tx) => {
-      const layout = await getActiveCompanyLayout(
-        tx,
-        layoutId,
-        companyId,
-      );
+      const layout = await getActiveCompanyLayout(tx, layoutId, companyId);
 
       const bus = await tx.bus.create({
         data: {
@@ -193,7 +152,7 @@ export const createBus = async ({
       return bus;
     });
   } catch (error) {
-    handleUniqueConstraintError(
+    rethrowIfUniqueConstraint(
       error,
       "A bus with this registration number or another unique value already exists in your company.",
     );
@@ -212,70 +171,33 @@ export const listBuses = async ({
   if (!Number.isInteger(page) || page < 1) {
     throw createError("Page must be a positive integer.", 400);
   }
-
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
     throw createError("Limit must be between 1 and 100.", 400);
   }
-
-  if (status) {
-    validateStatus(status);
-  }
+  if (status) validateStatus(status);
 
   const skip = (page - 1) * limit;
   const where = { companyId };
-
-  if (status) {
-    where.status = status;
-  }
+  if (status) where.status = status;
 
   if (search?.trim()) {
     const searchTerm = search.trim();
-
     where.OR = [
-      {
-        registrationNumber: {
-          contains: searchTerm,
-          mode: "insensitive",
-        },
-      },
-      {
-        manufacturer: {
-          contains: searchTerm,
-          mode: "insensitive",
-        },
-      },
-      {
-        model: {
-          contains: searchTerm,
-          mode: "insensitive",
-        },
-      },
-      {
-        busType: {
-          contains: searchTerm,
-          mode: "insensitive",
-        },
-      },
+      { registrationNumber: { contains: searchTerm, mode: "insensitive" } },
+      { manufacturer: { contains: searchTerm, mode: "insensitive" } },
+      { model: { contains: searchTerm, mode: "insensitive" } },
+      { busType: { contains: searchTerm, mode: "insensitive" } },
     ];
   }
 
   const [buses, total] = await prisma.$transaction([
     prisma.bus.findMany({
       where,
-      orderBy: [
-        { createdAt: "desc" },
-        { id: "desc" },
-      ],
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       skip,
       take: limit,
       include: {
-        layout: {
-          select: {
-            id: true,
-            name: true,
-            layoutType: true,
-          },
-        },
+        layout: { select: { id: true, name: true, layoutType: true } },
       },
     }),
     prisma.bus.count({ where }),
@@ -301,24 +223,10 @@ export const getBusById = async ({ id, companyId }) => {
   validateCompanyId(companyId);
 
   const bus = await prisma.bus.findFirst({
-    where: {
-      id,
-      companyId,
-    },
+    where: { id, companyId },
     include: {
-      layout: {
-        select: {
-          id: true,
-          name: true,
-          layoutType: true,
-        },
-      },
-      _count: {
-        select: {
-          seats: true,
-          trips: true,
-        },
-      },
+      layout: { select: { id: true, name: true, layoutType: true } },
+      _count: { select: { seats: true, trips: true } },
     },
   });
 
@@ -349,44 +257,34 @@ export const updateBus = async ({
 
   if (registrationNumber !== undefined) {
     const normalized = normalizeRegistrationNumber(registrationNumber);
-
     if (!normalized) {
       throw createError("Registration number cannot be empty.", 400);
     }
-
     data.registrationNumber = normalized;
   }
 
   if (manufacturer !== undefined) {
     data.manufacturer = manufacturer?.trim() || null;
   }
-
   if (model !== undefined) {
     data.model = model?.trim() || null;
   }
-
   if (busType !== undefined) {
     if (typeof busType !== "string" || !busType.trim()) {
       throw createError("Bus type cannot be empty.", 400);
     }
-
     data.busType = busType.trim();
   }
-
   if (capacity !== undefined) {
     validateCapacity(capacity);
     data.capacity = capacity;
   }
-
   if (layoutId !== undefined) {
     data.layoutId = layoutId;
   }
 
   if (Object.keys(data).length === 0) {
-    throw createError(
-      "At least one bus field must be provided.",
-      400,
-    );
+    throw createError("At least one bus field must be provided.", 400);
   }
 
   try {
@@ -394,15 +292,8 @@ export const updateBus = async ({
       await lockBusRow(tx, id, companyId);
 
       const existingBus = await tx.bus.findFirst({
-        where: {
-          id,
-          companyId,
-        },
-        select: {
-          id: true,
-          capacity: true,
-          status: true,
-        },
+        where: { id, companyId },
+        select: { id: true, capacity: true, status: true },
       });
 
       if (!existingBus) {
@@ -436,10 +327,7 @@ export const updateBus = async ({
         data.capacity !== existingBus.capacity
       ) {
         const activeSeatCount = await tx.seat.count({
-          where: {
-            busId: id,
-            status: "ACTIVE",
-          },
+          where: { busId: id, status: "ACTIVE" },
         });
 
         if (data.capacity < activeSeatCount) {
@@ -450,10 +338,7 @@ export const updateBus = async ({
         }
       }
 
-      const bus = await tx.bus.update({
-        where: { id },
-        data,
-      });
+      const bus = await tx.bus.update({ where: { id }, data });
 
       await tx.auditLog.create({
         data: {
@@ -462,28 +347,21 @@ export const updateBus = async ({
           action: "BUS_UPDATED",
           entityType: "Bus",
           entityId: bus.id,
-          metadata: {
-            changedFields: Object.keys(data),
-          },
+          metadata: { changedFields: Object.keys(data) },
         },
       });
 
       return bus;
     });
   } catch (error) {
-    handleUniqueConstraintError(
+    rethrowIfUniqueConstraint(
       error,
       "A bus with this registration number or another unique value already exists in your company.",
     );
   }
 };
 
-export const updateBusStatus = async ({
-  id,
-  companyId,
-  actorId,
-  status,
-}) => {
+export const updateBusStatus = async ({ id, companyId, actorId, status }) => {
   validateId(id, "Bus ID");
   validateCompanyId(companyId);
   validateActorId(actorId);
@@ -493,29 +371,18 @@ export const updateBusStatus = async ({
     await lockBusRow(tx, id, companyId);
 
     const existingBus = await tx.bus.findFirst({
-      where: {
-        id,
-        companyId,
-      },
-      select: {
-        id: true,
-        registrationNumber: true,
-        status: true,
-      },
+      where: { id, companyId },
+      select: { id: true, registrationNumber: true, status: true },
     });
 
     if (!existingBus) {
       throw createError("Bus not found.", 404);
     }
-
     if (existingBus.status === status) {
       throw createError(`Bus is already ${status}.`, 409);
     }
 
-    const bus = await tx.bus.update({
-      where: { id },
-      data: { status },
-    });
+    const bus = await tx.bus.update({ where: { id }, data: { status } });
 
     await tx.auditLog.create({
       data: {

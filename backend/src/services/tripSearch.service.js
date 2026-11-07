@@ -12,7 +12,6 @@ const validateCompanyId = (companyId) => {
   }
 };
 
-// UTC midnight-to-midnight bounds for a YYYY-MM-DD date string
 const dayBoundsUtc = (dateStr) => {
   const start = new Date(dateStr + "T00:00:00.000Z");
   const end = new Date(dateStr + "T23:59:59.999Z");
@@ -108,17 +107,27 @@ export const searchTrips = async ({
   }
 
   if (now > end) {
-    // Date is entirely in the past — return empty result rather than error
     return {
       trips: [],
-      pagination: { page, limit, total: 0, totalPages: 0, hasNext: false, hasPrev: false },
+      pagination: {
+        page,
+        limit,
+        total: 0,
+        totalPages: 0,
+        hasNext: false,
+        hasPrev: false,
+      },
     };
   }
 
-  // If today is included in the window, exclude already-departed trips
   if (start <= now) {
     where.departureTime = { gt: now, lte: end };
   }
+
+  // Fetch orderBy for base DB query. `duration_asc` and `minSeats` require
+  // in-memory filtering/sorting because Prisma cannot express either natively.
+  const requiresInMemory =
+    sort === "duration_asc" || minSeats !== undefined;
 
   const orderBy = (() => {
     switch (sort) {
@@ -127,7 +136,6 @@ export const searchTrips = async ({
       case "price_desc":
         return [{ basePrice: "desc" }, { departureTime: "asc" }, { id: "asc" }];
       case "duration_asc":
-        // Prisma cannot order by computed fields directly; we sort in memory after fetch
         return [{ departureTime: "asc" }, { id: "asc" }];
       case "departure_asc":
       default:
@@ -137,12 +145,54 @@ export const searchTrips = async ({
 
   const skip = (page - 1) * limit;
 
-  const [trips, total] = await prisma.$transaction([
+  // For in-memory paths, fetch all matching rows (no DB pagination),
+  // then filter/sort/slice deterministically.
+  if (requiresInMemory) {
+    const allTrips = await prisma.trip.findMany({
+      where,
+      orderBy,
+      include: {
+        company: { select: { id: true, name: true } },
+        route: { select: { origin: true, destination: true } },
+        bus: { select: { registrationNumber: true, capacity: true } },
+        tripSeats: { select: { status: true } },
+      },
+    });
+
+    let shaped = allTrips.map(shapePublicTrip);
+
+    if (minSeats !== undefined) {
+      shaped = shaped.filter((t) => t.availableSeats >= minSeats);
+    }
+
+    if (sort === "duration_asc") {
+      shaped.sort((a, b) => (a.duration ?? 0) - (b.duration ?? 0));
+    }
+
+    const totalCount = shaped.length;
+    const paged = shaped.slice(skip, skip + limit);
+    const totalPages = totalCount === 0 ? 0 : Math.ceil(totalCount / limit);
+
+    return {
+      trips: paged,
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1 && totalPages > 0,
+      },
+    };
+  }
+
+  // Fast path: no in-memory work needed — DB pagination is exact.
+  const [trips, totalCount] = await prisma.$transaction([
     prisma.trip.findMany({
       where,
       orderBy,
-      skip: sort === "duration_asc" ? 0 : skip,
-      take: sort === "duration_asc" ? undefined : limit,
+      skip,
+      take: limit,
       include: {
         company: { select: { id: true, name: true } },
         route: { select: { origin: true, destination: true } },
@@ -153,34 +203,7 @@ export const searchTrips = async ({
     prisma.trip.count({ where }),
   ]);
 
-  let shaped = trips.map(shapePublicTrip);
-
-  if (minSeats !== undefined) {
-    shaped = shaped.filter((t) => t.availableSeats >= minSeats);
-  }
-
-  if (sort === "duration_asc") {
-    shaped.sort((a, b) => (a.duration ?? 0) - (b.duration ?? 0));
-    shaped = shaped.slice(skip, skip + limit);
-  }
-
-  // total count must reflect post-filters for minSeats / duration; recompute if filters applied
-  // For efficiency: only re-run count for filtered cases
-  let totalCount = total;
-  if (minSeats !== undefined) {
-    // Refetch unbounded count is expensive; acceptable at V1 scale
-    const allForCount = await prisma.trip.findMany({
-      where,
-      select: {
-        id: true,
-        tripSeats: { select: { status: true } },
-      },
-    });
-    totalCount = allForCount.filter(
-      (t) => t.tripSeats.filter((s) => s.status === "AVAILABLE").length >= minSeats,
-    ).length;
-  }
-
+  const shaped = trips.map(shapePublicTrip);
   const totalPages = totalCount === 0 ? 0 : Math.ceil(totalCount / limit);
 
   return {
@@ -210,7 +233,16 @@ export const getPublicTripById = async ({ id }) => {
     },
     include: {
       company: { select: { id: true, name: true } },
-      route: { select: { origin: true, destination: true, stops: { orderBy: { sequence: "asc" }, select: { name: true, sequence: true } } } },
+      route: {
+        select: {
+          origin: true,
+          destination: true,
+          stops: {
+            orderBy: { sequence: "asc" },
+            select: { name: true, sequence: true },
+          },
+        },
+      },
       bus: { select: { registrationNumber: true, capacity: true } },
       tripSeats: { select: { status: true } },
     },

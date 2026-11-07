@@ -36,7 +36,7 @@ app.use("/api/platform", platformRoutes);
 app.use("/api/company", companyRoutes);
 app.use("/api", publicRoutes);
 
-app.use((error, req, res, next) => {
+app.use((error, req, res, _next) => {
   console.error(error);
 
   if (error.name === "ZodError") {

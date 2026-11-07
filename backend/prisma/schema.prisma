@@ -330,6 +330,8 @@ model BookingPassenger {
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 
+  seats BookingSeat[]
+
   @@index([bookingId])
 }
 
@@ -341,8 +343,9 @@ model BookingSeat {
   amount      Decimal  @db.Decimal(12, 2)
   createdAt   DateTime @default(now())
 
-  booking  Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  tripSeat TripSeat @relation(fields: [tripSeatId], references: [id], onDelete: Restrict)
+  booking   Booking          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  tripSeat  TripSeat         @relation(fields: [tripSeatId], references: [id], onDelete: Restrict)
+  passenger BookingPassenger @relation(fields: [passengerId], references: [id], onDelete: Restrict)
 
   @@index([bookingId])
   @@index([passengerId])
