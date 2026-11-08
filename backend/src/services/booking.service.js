@@ -25,10 +25,6 @@ const generateBookingNumber = () => {
   return `ITK-${ymd}-${rand}`;
 };
 
-/**
- * Lazy sweep: release all expired holds on a given trip.
- * Runs inside the caller's transaction.
- */
 const sweepExpiredHoldsOnTrip = async (tx, tripId) => {
   const now = new Date();
 
@@ -536,5 +532,80 @@ export const releaseBooking = async ({ id, customerId }) => {
     });
 
     return released;
+  });
+};
+
+/**
+ * Global sweep — releases ALL expired holds across the entire platform.
+ * Used by PLATFORM_ADMIN via POST /api/platform/bookings/sweep.
+ * Does NOT lock seats per-trip; each expired hold is released atomically.
+ */
+export const sweepAllExpiredHolds = async ({ actorId }) => {
+  return prisma.$transaction(async (tx) => {
+    const now = new Date();
+
+    const expiredHolds = await tx.bookingHold.findMany({
+      where: { status: "ACTIVE", expiresAt: { lt: now } },
+      select: { id: true, bookingId: true, tripSeatId: true },
+    });
+
+    if (expiredHolds.length === 0) {
+      await tx.auditLog.create({
+        data: {
+          companyId: null,
+          actorId,
+          action: "BOOKING_SWEEP",
+          entityType: "Booking",
+          entityId: "global",
+          metadata: { expiredBookings: 0, releasedSeats: 0 },
+        },
+      });
+      return { expiredBookings: 0, releasedSeats: 0 };
+    }
+
+    const holdIds = expiredHolds.map((h) => h.id);
+    const tripSeatIds = [...new Set(expiredHolds.map((h) => h.tripSeatId))];
+    const bookingIds = [...new Set(expiredHolds.map((h) => h.bookingId))];
+
+    await tx.bookingHold.updateMany({
+      where: { id: { in: holdIds } },
+      data: { status: "EXPIRED", releasedAt: now },
+    });
+
+    await tx.tripSeat.updateMany({
+      where: { id: { in: tripSeatIds }, status: "HELD" },
+      data: { status: "AVAILABLE" },
+    });
+
+    for (const bookingId of bookingIds) {
+      const remainingActive = await tx.bookingHold.count({
+        where: { bookingId, status: "ACTIVE" },
+      });
+      if (remainingActive === 0) {
+        await tx.booking.updateMany({
+          where: { id: bookingId, status: "HELD" },
+          data: { status: "EXPIRED" },
+        });
+      }
+    }
+
+    await tx.auditLog.create({
+      data: {
+        companyId: null,
+        actorId,
+        action: "BOOKING_SWEEP",
+        entityType: "Booking",
+        entityId: "global",
+        metadata: {
+          expiredBookings: bookingIds.length,
+          releasedSeats: tripSeatIds.length,
+        },
+      },
+    });
+
+    return {
+      expiredBookings: bookingIds.length,
+      releasedSeats: tripSeatIds.length,
+    };
   });
 };

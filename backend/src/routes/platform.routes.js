@@ -16,86 +16,26 @@ import {
   updateStatus as updateRouteStatus,
   replaceStops as replaceRouteStops,
 } from "../controllers/route.controller.js";
+import { sweep as sweepBookings } from "../controllers/bookingSweep.controller.js";
 
 const router = Router();
 
 // ---------- Companies ----------
-router.post(
-  "/companies",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  createCompany,
-);
-
-router.get(
-  "/companies",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  listCompanies,
-);
-
-router.get(
-  "/companies/:id",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  getCompanyById,
-);
-
-router.patch(
-  "/companies/:id",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  updateCompany,
-);
-
-router.patch(
-  "/companies/:id/status",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  updateCompanyStatus,
-);
+router.post("/companies", authenticate, authorizeRoles("PLATFORM_ADMIN"), createCompany);
+router.get("/companies", authenticate, authorizeRoles("PLATFORM_ADMIN"), listCompanies);
+router.get("/companies/:id", authenticate, authorizeRoles("PLATFORM_ADMIN"), getCompanyById);
+router.patch("/companies/:id", authenticate, authorizeRoles("PLATFORM_ADMIN"), updateCompany);
+router.patch("/companies/:id/status", authenticate, authorizeRoles("PLATFORM_ADMIN"), updateCompanyStatus);
 
 // ---------- Routes ----------
-router.post(
-  "/routes",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  createRoute,
-);
+router.post("/routes", authenticate, authorizeRoles("PLATFORM_ADMIN"), createRoute);
+router.get("/routes", authenticate, authorizeRoles("PLATFORM_ADMIN"), listRoutes);
+router.get("/routes/:id", authenticate, authorizeRoles("PLATFORM_ADMIN"), getRouteById);
+router.patch("/routes/:id", authenticate, authorizeRoles("PLATFORM_ADMIN"), updateRoute);
+router.patch("/routes/:id/status", authenticate, authorizeRoles("PLATFORM_ADMIN"), updateRouteStatus);
+router.put("/routes/:id/stops", authenticate, authorizeRoles("PLATFORM_ADMIN"), replaceRouteStops);
 
-router.get(
-  "/routes",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  listRoutes,
-);
-
-router.get(
-  "/routes/:id",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  getRouteById,
-);
-
-router.patch(
-  "/routes/:id",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  updateRoute,
-);
-
-router.patch(
-  "/routes/:id/status",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  updateRouteStatus,
-);
-
-router.put(
-  "/routes/:id/stops",
-  authenticate,
-  authorizeRoles("PLATFORM_ADMIN"),
-  replaceRouteStops,
-);
+// ---------- Bookings (admin ops) ----------
+router.post("/bookings/sweep", authenticate, authorizeRoles("PLATFORM_ADMIN"), sweepBookings);
 
 export default router;
