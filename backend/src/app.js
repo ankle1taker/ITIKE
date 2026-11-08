@@ -3,6 +3,7 @@ import prisma from "./config/database.js";
 import authRoutes from "./routes/auth.routes.js";
 import platformRoutes from "./routes/platform.routes.js";
 import companyRoutes from "./routes/company.routes.js";
+import customerRoutes from "./routes/customer.routes.js";
 import publicRoutes from "./routes/public.routes.js";
 
 const app = express();
@@ -34,6 +35,7 @@ app.get("/health", async (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/platform", platformRoutes);
 app.use("/api/company", companyRoutes);
+app.use("/api/customer", customerRoutes);
 app.use("/api", publicRoutes);
 
 app.use((error, req, res, _next) => {
@@ -49,11 +51,34 @@ app.use((error, req, res, _next) => {
 
   const statusCode = error.statusCode || 500;
 
-  res.status(statusCode).json({
+  // In development, expose the real error to make debugging painless.
+  // In production, keep the response generic.
+  const isDev = process.env.NODE_ENV !== "production";
+
+  const body = {
     success: false,
     message:
-      statusCode === 500 ? "Internal server error." : error.message,
-  });
+      statusCode === 500
+        ? isDev
+          ? error.message || String(error)
+          : "Internal server error."
+        : error.message,
+  };
+
+  if (isDev && statusCode === 500) {
+    body.debug = {
+      name: error.name,
+      code: error.code,
+      meta: error.meta,
+      stack: error.stack,
+    };
+  }
+
+  if (error.unavailableSeatIds) {
+    body.unavailableSeatIds = error.unavailableSeatIds;
+  }
+
+  res.status(statusCode).json(body);
 });
 
 export default app;

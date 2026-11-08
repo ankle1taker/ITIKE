@@ -9,3 +9,7 @@ backend/.agents/
 backend/.claude/
 backend/.windsurf/
 backend/skills-lock.json
+# Log files
+*.log
+api-error.log
+
