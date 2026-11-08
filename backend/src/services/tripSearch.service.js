@@ -12,9 +12,10 @@ const validateCompanyId = (companyId) => {
   }
 };
 
-const dayBoundsUtc = (dateStr) => {
-  const start = new Date(dateStr + "T00:00:00.000Z");
-  const end = new Date(dateStr + "T23:59:59.999Z");
+// Africa/Kigali is UTC+02:00 year-round (no DST).
+const dayBoundsKigali = (dateStr) => {
+  const start = new Date(dateStr + "T00:00:00+02:00");
+  const end = new Date(dateStr + "T23:59:59.999+02:00");
   return { start, end };
 };
 
@@ -23,9 +24,32 @@ const computeDurationMinutes = (departure, arrival) => {
   return Math.round((arrival.getTime() - departure.getTime()) / 60000);
 };
 
-const shapePublicTrip = (trip) => {
-  const availableSeats = trip.tripSeats.filter(
-    (ts) => ts.status === "AVAILABLE",
+/**
+ * A TripSeat counts as available if:
+ *  - status AVAILABLE, OR
+ *  - status HELD but all of its ACTIVE BookingHolds have expired.
+ *
+ * The authoritative expiry is BookingHold.expiresAt, NOT Booking.expiresAt,
+ * because Booking.expiresAt only gets synced when a sweep runs. Search is
+ * read-only and must not depend on a sweep to have happened.
+ */
+const isSeatEffectivelyAvailable = (tripSeat, now) => {
+  if (tripSeat.status === "AVAILABLE") return true;
+  if (tripSeat.status === "HELD") {
+    const holds = tripSeat.bookingHolds || [];
+    // Consider only holds that are still logically ACTIVE (not RELEASED/EXPIRED/etc.)
+    const activeHolds = holds.filter((h) => h.status === "ACTIVE");
+    // No active hold at all → the seat is stuck in HELD with no owner; treat as available
+    if (activeHolds.length === 0) return true;
+    // If ALL active holds are expired → seat is available
+    return activeHolds.every((h) => new Date(h.expiresAt) < now);
+  }
+  return false;
+};
+
+const shapePublicTrip = (trip, now) => {
+  const availableSeats = trip.tripSeats.filter((ts) =>
+    isSeatEffectivelyAvailable(ts, now),
   ).length;
 
   return {
@@ -44,14 +68,25 @@ const shapePublicTrip = (trip) => {
     },
     departureTime: trip.departureTime,
     arrivalTime: trip.arrivalTime,
-    duration: computeDurationMinutes(
-      trip.departureTime,
-      trip.arrivalTime,
-    ),
+    duration: computeDurationMinutes(trip.departureTime, trip.arrivalTime),
     basePrice: trip.basePrice,
     availableSeats,
     totalSeats: trip.tripSeats.length,
   };
+};
+
+// Fetch only the fields the availability check needs.
+// BookingHold is the authoritative source of expiresAt.
+const tripSeatInclude = {
+  select: {
+    status: true,
+    bookingHolds: {
+      select: {
+        status: true,
+        expiresAt: true,
+      },
+    },
+  },
 };
 
 export const searchTrips = async ({
@@ -72,18 +107,14 @@ export const searchTrips = async ({
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
     throw createError("Limit must be between 1 and 50.", 400);
   }
-  if (
-    minPrice !== undefined &&
-    maxPrice !== undefined &&
-    minPrice > maxPrice
-  ) {
+  if (minPrice !== undefined && maxPrice !== undefined && minPrice > maxPrice) {
     throw createError("minPrice cannot be greater than maxPrice.", 400);
   }
   if (companyId !== undefined) {
     validateCompanyId(companyId);
   }
 
-  const { start, end } = dayBoundsUtc(date);
+  const { start, end } = dayBoundsKigali(date);
   const now = new Date();
 
   const where = {
@@ -124,10 +155,7 @@ export const searchTrips = async ({
     where.departureTime = { gt: now, lte: end };
   }
 
-  // Fetch orderBy for base DB query. `duration_asc` and `minSeats` require
-  // in-memory filtering/sorting because Prisma cannot express either natively.
-  const requiresInMemory =
-    sort === "duration_asc" || minSeats !== undefined;
+  const requiresInMemory = sort === "duration_asc" || minSeats !== undefined;
 
   const orderBy = (() => {
     switch (sort) {
@@ -145,8 +173,6 @@ export const searchTrips = async ({
 
   const skip = (page - 1) * limit;
 
-  // For in-memory paths, fetch all matching rows (no DB pagination),
-  // then filter/sort/slice deterministically.
   if (requiresInMemory) {
     const allTrips = await prisma.trip.findMany({
       where,
@@ -155,11 +181,11 @@ export const searchTrips = async ({
         company: { select: { id: true, name: true } },
         route: { select: { origin: true, destination: true } },
         bus: { select: { registrationNumber: true, capacity: true } },
-        tripSeats: { select: { status: true } },
+        tripSeats: tripSeatInclude,
       },
     });
 
-    let shaped = allTrips.map(shapePublicTrip);
+    let shaped = allTrips.map((t) => shapePublicTrip(t, now));
 
     if (minSeats !== undefined) {
       shaped = shaped.filter((t) => t.availableSeats >= minSeats);
@@ -186,7 +212,6 @@ export const searchTrips = async ({
     };
   }
 
-  // Fast path: no in-memory work needed — DB pagination is exact.
   const [trips, totalCount] = await prisma.$transaction([
     prisma.trip.findMany({
       where,
@@ -197,13 +222,13 @@ export const searchTrips = async ({
         company: { select: { id: true, name: true } },
         route: { select: { origin: true, destination: true } },
         bus: { select: { registrationNumber: true, capacity: true } },
-        tripSeats: { select: { status: true } },
+        tripSeats: tripSeatInclude,
       },
     }),
     prisma.trip.count({ where }),
   ]);
 
-  const shaped = trips.map(shapePublicTrip);
+  const shaped = trips.map((t) => shapePublicTrip(t, now));
   const totalPages = totalCount === 0 ? 0 : Math.ceil(totalCount / limit);
 
   return {
@@ -244,7 +269,7 @@ export const getPublicTripById = async ({ id }) => {
         },
       },
       bus: { select: { registrationNumber: true, capacity: true } },
-      tripSeats: { select: { status: true } },
+      tripSeats: tripSeatInclude,
     },
   });
 
@@ -252,7 +277,7 @@ export const getPublicTripById = async ({ id }) => {
     throw createError("Trip not found.", 404);
   }
 
-  const shaped = shapePublicTrip(trip);
+  const shaped = shapePublicTrip(trip, now);
   shaped.route.stops = trip.route.stops;
 
   return shaped;
