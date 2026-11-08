@@ -3,3 +3,8 @@ dist/
 .env
 
 /src/generated/prisma
+
+# Log files
+*.log
+api-error.log
+
