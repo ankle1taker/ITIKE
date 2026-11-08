@@ -2,6 +2,7 @@ import {
   createBooking,
   listMyBookings,
   getMyBookingById,
+  releaseBooking,
 } from "../services/booking.service.js";
 import {
   createBookingSchema,
@@ -66,6 +67,23 @@ export const getById = async (req, res, next) => {
     const booking = await getMyBookingById({ id, customerId });
 
     res.status(200).json({ success: true, data: { booking } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const release = async (req, res, next) => {
+  try {
+    const { id } = bookingIdParamSchema.parse(req.params);
+    const customerId = getCustomerId(req);
+
+    const booking = await releaseBooking({ id, customerId });
+
+    res.status(200).json({
+      success: true,
+      message: "Booking released successfully.",
+      data: { booking },
+    });
   } catch (error) {
     next(error);
   }

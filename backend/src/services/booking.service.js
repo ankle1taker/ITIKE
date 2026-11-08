@@ -27,13 +27,7 @@ const generateBookingNumber = () => {
 
 /**
  * Lazy sweep: release all expired holds on a given trip.
- *
- * IMPORTANT: raw SQL casts both sides of every join/comparison to `text`
- * because Prisma 7 with the pg driver adapter stores `@default(uuid())`
- * as `uuid` in the DB but interpolates JS string params as `text`.
- * Without the cast, Postgres fails with:
- *   operator does not exist: text = uuid
- * Casting to text is deterministic and matches the semantic (both are UUIDs).
+ * Runs inside the caller's transaction.
  */
 const sweepExpiredHoldsOnTrip = async (tx, tripId) => {
   const now = new Date();
@@ -182,8 +176,6 @@ export const createBooking = async ({
       throw createError("The operating company is not active.", 409);
     }
 
-    // Cast both sides to text — same rationale as sweep (uuid vs text mismatch
-    // through the Prisma 7 pg driver adapter).
     const lockedSeats = await tx.$queryRaw`
       SELECT ts."id", ts."seatId", ts."status", ts."tripId"
       FROM "TripSeat" ts
@@ -428,4 +420,121 @@ export const getMyBookingById = async ({ id, customerId }) => {
   }
 
   return booking;
+};
+
+export const releaseBooking = async ({ id, customerId }) => {
+  validateId(id, "Booking ID");
+
+  return prisma.$transaction(async (tx) => {
+    const booking = await tx.booking.findFirst({
+      where: { id, customerId },
+      select: {
+        id: true,
+        status: true,
+        customerId: true,
+        bookingSeat: {
+          select: { tripSeatId: true },
+        },
+        holds: {
+          where: { status: "ACTIVE" },
+          select: { id: true },
+        },
+      },
+    });
+
+    if (!booking) {
+      throw createError("Booking not found.", 404);
+    }
+
+    if (booking.status !== "HELD") {
+      throw createError(
+        `Only HELD bookings can be released. Current status: ${booking.status}.`,
+        409,
+      );
+    }
+
+    const now = new Date();
+
+    await tx.bookingHold.updateMany({
+      where: {
+        bookingId: booking.id,
+        status: "ACTIVE",
+      },
+      data: {
+        status: "RELEASED",
+        releasedAt: now,
+      },
+    });
+
+    const seatIds = booking.bookingSeat.map((bs) => bs.tripSeatId);
+    if (seatIds.length > 0) {
+      await tx.tripSeat.updateMany({
+        where: {
+          id: { in: seatIds },
+          status: "HELD",
+        },
+        data: { status: "AVAILABLE" },
+      });
+    }
+
+    await tx.booking.update({
+      where: { id: booking.id },
+      data: {
+        status: "CANCELLED",
+        expiresAt: null,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        companyId: null,
+        actorId: customerId,
+        action: "BOOKING_RELEASED",
+        entityType: "Booking",
+        entityId: booking.id,
+        metadata: {
+          releasedSeatCount: seatIds.length,
+          previousStatus: "HELD",
+        },
+      },
+    });
+
+    const released = await tx.booking.findUnique({
+      where: { id: booking.id },
+      include: {
+        trip: {
+          select: {
+            id: true,
+            departureTime: true,
+            arrivalTime: true,
+            basePrice: true,
+            route: { select: { origin: true, destination: true } },
+            bus: { select: { registrationNumber: true } },
+            company: { select: { id: true, name: true } },
+          },
+        },
+        passengers: {
+          select: { id: true, fullName: true, phone: true },
+        },
+        bookingSeat: {
+          select: {
+            id: true,
+            amount: true,
+            tripSeat: {
+              select: {
+                id: true,
+                status: true,
+                seat: { select: { seatNumber: true } },
+              },
+            },
+          },
+        },
+        holds: {
+          select: { id: true, status: true, releasedAt: true },
+        },
+      },
+    });
+
+    return released;
+  });
 };
