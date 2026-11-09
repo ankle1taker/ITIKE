@@ -1,16 +1,12 @@
 import { mockProvider } from "./mock.provider.js";
+import { mtnMomoProvider } from "./mtnMomo.provider.js";
+import { airtelMoneyProvider } from "./airtelMoney.provider.js";
 
 const KNOWN_PROVIDERS = new Set(["mock", "mtn_momo", "airtel"]);
 
 let initialized = false;
 let activeProvider = null;
 
-/**
- * Resolve the active provider once at startup.
- * Real providers (mtn_momo, airtel) are NOT yet implemented — attempting to
- * use them here throws at startup with a clear error, which is correct.
- * Module 9b adds them.
- */
 const resolveProvider = () => {
   const name = process.env.PAYMENT_PROVIDER || "mock";
   const nodeEnv = process.env.NODE_ENV || "development";
@@ -30,18 +26,39 @@ const resolveProvider = () => {
 
   if (name === "mock") {
     if (!process.env.MOCK_WEBHOOK_SECRET) {
-      throw new Error(
-        "PAYMENT_PROVIDER=mock requires MOCK_WEBHOOK_SECRET in the environment.",
-      );
+      throw new Error("PAYMENT_PROVIDER=mock requires MOCK_WEBHOOK_SECRET.");
     }
     return mockProvider;
   }
 
-  // Real providers come in module 9b. Until then, refuse to start.
-  throw new Error(
-    `PAYMENT_PROVIDER="${name}" is not yet implemented. ` +
-      `Only "mock" is supported in this build (module 9a).`,
-  );
+  if (name === "mtn_momo") {
+    const required = [
+      "MTN_MOMO_BASE_URL",
+      "MTN_MOMO_SUBSCRIPTION_KEY",
+      "MTN_MOMO_API_USER",
+      "MTN_MOMO_API_KEY",
+    ];
+    const missing = required.filter((k) => !process.env[k]);
+    if (missing.length > 0) {
+      throw new Error(
+        `PAYMENT_PROVIDER=mtn_momo missing env: ${missing.join(", ")}`,
+      );
+    }
+    return mtnMomoProvider;
+  }
+
+  if (name === "airtel") {
+    const required = ["AIRTEL_BASE_URL", "AIRTEL_CLIENT_ID", "AIRTEL_CLIENT_SECRET"];
+    const missing = required.filter((k) => !process.env[k]);
+    if (missing.length > 0) {
+      throw new Error(
+        `PAYMENT_PROVIDER=airtel missing env: ${missing.join(", ")}`,
+      );
+    }
+    return airtelMoneyProvider;
+  }
+
+  throw new Error(`Unreachable provider resolution for "${name}"`);
 };
 
 export const getProvider = () => {

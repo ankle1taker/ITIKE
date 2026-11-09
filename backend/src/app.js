@@ -7,11 +7,10 @@ import customerRoutes from "./routes/customer.routes.js";
 import publicRoutes from "./routes/public.routes.js";
 import webhooksRoutes from "./routes/webhooks.routes.js";
 import { getProvider } from "./services/payments/index.js";
+import { startPaymentReconciler } from "./services/paymentReconciler.service.js";
 
 const app = express();
 
-// Capture raw body for webhook signature verification.
-// For all other routes, use express.json() normally.
 app.use(
   "/api/webhooks",
   express.json({
@@ -90,8 +89,12 @@ app.use((error, req, res, _next) => {
   res.status(statusCode).json(body);
 });
 
-// Fail fast if the payment provider is misconfigured.
-// This runs at import time — the app will not start with a bad provider.
+// Fail fast if payment provider is misconfigured
 getProvider();
+
+// Start background reconciler (only if explicitly enabled, to keep tests isolated)
+if (process.env.ENABLE_PAYMENT_RECONCILER === "true") {
+  startPaymentReconciler();
+}
 
 export default app;
