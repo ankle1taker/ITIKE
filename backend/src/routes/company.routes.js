@@ -40,6 +40,7 @@ import {
   list as listTripSeats,
 } from "../controllers/tripSeat.controller.js";
 import cancellationPolicyRoutes from "./cancellation.routes.js";
+import checkInRoutes from "./checkIn.routes.js";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
 import { requireCompany } from "../middleware/tenant.middleware.js";
@@ -88,5 +89,6 @@ router.get("/trips/:id/seats", authenticate, authorizeRoles("COMPANY_ADMIN", "CO
 
 // ---------- Cancellation Policy ----------
 router.use("/cancellation-policy", cancellationPolicyRoutes);
-
+// ---------- Tickets (check-in) ----------
+router.use("/tickets", checkInRoutes);
 export default router;
