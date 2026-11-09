@@ -41,6 +41,7 @@ import {
 } from "../controllers/tripSeat.controller.js";
 import cancellationPolicyRoutes from "./cancellation.routes.js";
 import checkInRoutes from "./checkIn.routes.js";
+import { companyAnalyticsRouter } from "./analytics.routes.js";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
 import { requireCompany } from "../middleware/tenant.middleware.js";
@@ -91,4 +92,6 @@ router.get("/trips/:id/seats", authenticate, authorizeRoles("COMPANY_ADMIN", "CO
 router.use("/cancellation-policy", cancellationPolicyRoutes);
 // ---------- Tickets (check-in) ----------
 router.use("/tickets", checkInRoutes);
+// ---------- Analytics ----------
+router.use("/analytics", companyAnalyticsRouter);
 export default router;
