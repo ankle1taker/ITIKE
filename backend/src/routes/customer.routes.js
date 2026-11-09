@@ -10,6 +10,10 @@ import {
   status as paymentStatus,
   pollStatus as pollPaymentStatus,
 } from "../controllers/payment.controller.js";
+import {
+  getForBooking as getTicketForBooking,
+  list as listMyTickets,
+} from "../controllers/ticket.controller.js";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
 
@@ -25,5 +29,9 @@ router.delete("/bookings/:id", authenticate, authorizeRoles("CUSTOMER"), release
 router.post("/bookings/:id/pay", authenticate, authorizeRoles("CUSTOMER"), initiatePayment);
 router.get("/bookings/:id/payment", authenticate, authorizeRoles("CUSTOMER"), paymentStatus);
 router.post("/bookings/:id/payment/poll", authenticate, authorizeRoles("CUSTOMER"), pollPaymentStatus);
+
+// ---------- Customer tickets ----------
+router.get("/tickets", authenticate, authorizeRoles("CUSTOMER"), listMyTickets);
+router.get("/bookings/:id/ticket", authenticate, authorizeRoles("CUSTOMER"), getTicketForBooking);
 
 export default router;

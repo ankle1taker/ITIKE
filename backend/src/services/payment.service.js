@@ -1,8 +1,9 @@
 import prisma from "../config/database.js";
 import { getProvider } from "./payments/index.js";
+import { issueTicketForBookingInTx } from "./ticket.service.js";
 
-const HOLD_EXTENSION_MINUTES = 10; // Q1=b
-const MAX_REFUND_LOOKBACK_MINUTES = 15; // Q5=b
+const HOLD_EXTENSION_MINUTES = 10;
+const MAX_REFUND_LOOKBACK_MINUTES = 15;
 
 const createError = (message, statusCode) => {
   const error = new Error(message);
@@ -16,20 +17,6 @@ const validateId = (id, fieldName = "ID") => {
   }
 };
 
-/**
- * Initiate a payment for a HELD booking.
- *
- * - Only the owning customer can initiate.
- * - Booking must be HELD.
- * - Booking must not be expired.
- * - Must not have an existing Payment row.
- *
- * On success:
- *  - Creates Payment (status=PENDING)
- *  - Extends Booking.expiresAt to now + 10m  (Q1=b)
- *  - Transitions Booking.status to PENDING_PAYMENT
- *  - Returns redirectUrl / providerReference for the frontend
- */
 export const initiatePayment = async ({
   bookingId,
   customerId,
@@ -69,10 +56,6 @@ export const initiatePayment = async ({
   const provider = getProvider();
   const requestedProvider = providerName;
 
-  // In 9a only the mock provider is wired; a request for mtn_momo/airtel
-  // will reach here only if PAYMENT_PROVIDER matches in env — otherwise the
-  // active provider is mock. We require the requested provider to match the
-  // active provider so the customer knows what they're paying with.
   if (requestedProvider !== provider.name) {
     throw createError(
       `Provider "${requestedProvider}" is not active. Active provider: "${provider.name}".`,
@@ -92,7 +75,6 @@ export const initiatePayment = async ({
       callbackUrl: process.env.PAYMENT_CALLBACK_URL || null,
     });
   } catch (err) {
-    // Provider-side failure — record failed payment attempt for audit, no booking change
     throw createError(
       `Payment provider failed to initiate: ${err.message}`,
       502,
@@ -150,19 +132,6 @@ export const initiatePayment = async ({
   });
 };
 
-/**
- * Handle a webhook from a provider.
- *
- * - Verify signature (via provider adapter).
- * - Look up Payment by providerReference.
- * - If status SUCCESS:
- *     - If booking is still HELD/PENDING_PAYMENT and seats are held → confirm.
- *     - If seats are no longer held → auto-refund (F6/F9).
- * - If status FAILED: mark Payment FAILED, booking back to HELD (customer can retry).
- * - If status PENDING: no-op (acknowledge).
- *
- * Idempotent: if Payment is already SUCCESS or REFUNDED, return early.
- */
 export const handleWebhook = async ({ providerName, headers, rawBody }) => {
   const provider = getProvider();
   if (providerName !== provider.name) {
@@ -183,19 +152,19 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
   const { providerReference, status, amount, paidAt } = verification;
 
   const payment = await prisma.payment.findUnique({
-  where: { providerReference },
-  include: {
-    booking: {
-      select: {
-        id: true,
-        status: true,
-        totalAmount: true,
-        expiresAt: true,    // ← ADD THIS
-        bookingSeat: { select: { tripSeatId: true } },
+    where: { providerReference },
+    include: {
+      booking: {
+        select: {
+          id: true,
+          status: true,
+          totalAmount: true,
+          expiresAt: true,
+          bookingSeat: { select: { tripSeatId: true } },
+        },
       },
     },
-  },
-});
+  });
 
   if (!payment) {
     throw createError("Payment not found for provider reference.", 404);
@@ -215,7 +184,6 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
         where: { id: payment.id },
         data: { status: "FAILED" },
       });
-      // Revert booking to HELD so customer can try again (if still not expired)
       if (
         payment.booking.status === "PENDING_PAYMENT" &&
         payment.booking.expiresAt &&
@@ -245,7 +213,6 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
   const expectedAmount = Number(payment.booking.totalAmount);
 
   if (Math.abs(paidAmount - expectedAmount) > 0.01) {
-    // Q9: reject partial amounts — refund
     return refundPayment({
       paymentId: payment.id,
       reason: `Amount mismatch: got ${paidAmount}, expected ${expectedAmount}`,
@@ -253,7 +220,6 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
     });
   }
 
-  // Lock the tripSeat rows for this booking and verify they are still HELD
   const tripSeatIds = payment.booking.bookingSeat.map((bs) => bs.tripSeatId);
 
   return prisma.$transaction(async (tx) => {
@@ -267,7 +233,6 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
     const stillHeld = locked.every((s) => s.status === "HELD");
 
     if (!stillHeld) {
-      // F6/F9: payment succeeded but seats no longer held → refund
       await tx.payment.update({
         where: { id: payment.id },
         data: { status: "SUCCESS", paidAt: paidAt ? new Date(paidAt) : new Date() },
@@ -288,14 +253,12 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
         },
       });
 
-      // Queue for refund — process inline for V1 (Q7=a)
       setImmediate(() => {
         refundPayment({
           paymentId: payment.id,
           reason: "Seat no longer available at confirm time",
           triggeredBy: "system",
         }).catch((err) => {
-          // eslint-disable-next-line no-console
           console.error("[payments] auto-refund after confirm failed:", err);
         });
       });
@@ -307,7 +270,6 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
       };
     }
 
-    // Normal confirm
     const now = new Date();
     await tx.payment.update({
       where: { id: payment.id },
@@ -325,6 +287,11 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
     await tx.tripSeat.updateMany({
       where: { id: { in: tripSeatIds } },
       data: { status: "CONFIRMED" },
+    });
+
+    // Issue ticket — idempotent; safe on duplicate webhook retries
+    await issueTicketForBookingInTx(tx, {
+      bookingId: payment.booking.id,
     });
 
     await tx.bookingHold.updateMany({
@@ -351,12 +318,6 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
   });
 };
 
-/**
- * Poll provider for current status and reconcile. Called by:
- *  - Frontend "check payment status" endpoint (see controller)
- *  - Background reconciler (module 9c)
- *  - Admin endpoint (Q3=c)
- */
 export const pollAndReconcile = async ({ paymentId }) => {
   const payment = await prisma.payment.findUnique({
     where: { id: paymentId },
@@ -378,7 +339,6 @@ export const pollAndReconcile = async ({ paymentId }) => {
     return { status: "PENDING", noop: true };
   }
 
-  // Reuse webhook processing by simulating a valid webhook payload
   const simulatedBody = JSON.stringify({
     providerReference: payment.providerReference,
     status: pollResult.status,
@@ -387,7 +347,6 @@ export const pollAndReconcile = async ({ paymentId }) => {
   });
 
   const webhookHeaders = {
-    // For mock provider, the "signature" is MOCK_WEBHOOK_SECRET — a valid internal call
     "x-mock-signature": process.env.MOCK_WEBHOOK_SECRET,
   };
 
@@ -398,13 +357,6 @@ export const pollAndReconcile = async ({ paymentId }) => {
   });
 };
 
-/**
- * Refund a SUCCESS payment.
- *
- * Triggered by:
- *  - Auto-refund on F6/F9 (seat gone or amount mismatch)
- *  - Manual admin refund (V1: no endpoint yet; called only internally)
- */
 export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
   const payment = await prisma.payment.findUnique({
     where: { id: paymentId },
@@ -444,7 +396,6 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
       data: { status: "CANCELLED" },
     });
 
-    // Release seats if they were still CONFIRMED
     const bookingSeats = await tx.bookingSeat.findMany({
       where: { bookingId: payment.bookingId },
       select: { tripSeatId: true },
@@ -476,10 +427,6 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
   });
 };
 
-/**
- * Get payment status for a booking (used by frontend after redirect).
- * Owned-booking only — enforced via the customerId check.
- */
 export const getPaymentStatusForBooking = async ({ bookingId, customerId }) => {
   validateId(bookingId, "Booking ID");
 

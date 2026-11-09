@@ -6,6 +6,7 @@ import companyRoutes from "./routes/company.routes.js";
 import customerRoutes from "./routes/customer.routes.js";
 import publicRoutes from "./routes/public.routes.js";
 import webhooksRoutes from "./routes/webhooks.routes.js";
+import ticketsRoutes from "./routes/tickets.routes.js";
 import { getProvider } from "./services/payments/index.js";
 import { startPaymentReconciler } from "./services/paymentReconciler.service.js";
 
@@ -47,6 +48,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/platform", platformRoutes);
 app.use("/api/company", companyRoutes);
 app.use("/api/customer", customerRoutes);
+app.use("/api/tickets", ticketsRoutes);
 app.use("/api", publicRoutes);
 
 app.use((error, req, res, _next) => {
@@ -89,10 +91,8 @@ app.use((error, req, res, _next) => {
   res.status(statusCode).json(body);
 });
 
-// Fail fast if payment provider is misconfigured
 getProvider();
 
-// Start background reconciler (only if explicitly enabled, to keep tests isolated)
 if (process.env.ENABLE_PAYMENT_RECONCILER === "true") {
   startPaymentReconciler();
 }
