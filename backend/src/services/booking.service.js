@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import prisma from "../config/database.js";
-
+import { reconcileTripSeatsInTx } from "./tripSeat.service.js";
+import { buildPolicySnapshotForBooking } from "./cancellation.service.js";
 const HOLD_MINUTES = 10;
 
 const createError = (message, statusCode) => {
@@ -210,6 +211,8 @@ export const createBooking = async ({
 
     const bookingNumber = generateBookingNumber();
 
+    const policySnapshot = await buildPolicySnapshotForBooking(trip.companyId);
+
     const booking = await tx.booking.create({
       data: {
         bookingNumber,
@@ -219,6 +222,7 @@ export const createBooking = async ({
         status: "HELD",
         totalAmount,
         expiresAt,
+        termsSnapshot: policySnapshot,
       },
     });
 

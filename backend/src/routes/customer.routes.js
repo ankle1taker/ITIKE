@@ -14,6 +14,7 @@ import {
   getForBooking as getTicketForBooking,
   list as listMyTickets,
 } from "../controllers/ticket.controller.js";
+import { cancel as cancelBooking } from "../controllers/cancellation.controller.js";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
 
@@ -24,6 +25,7 @@ router.post("/bookings", authenticate, authorizeRoles("CUSTOMER"), createBooking
 router.get("/bookings", authenticate, authorizeRoles("CUSTOMER"), listMyBookings);
 router.get("/bookings/:id", authenticate, authorizeRoles("CUSTOMER"), getMyBookingById);
 router.delete("/bookings/:id", authenticate, authorizeRoles("CUSTOMER"), releaseBooking);
+router.post("/bookings/:id/cancel", authenticate, authorizeRoles("CUSTOMER"), cancelBooking);
 
 // ---------- Customer payments ----------
 router.post("/bookings/:id/pay", authenticate, authorizeRoles("CUSTOMER"), initiatePayment);

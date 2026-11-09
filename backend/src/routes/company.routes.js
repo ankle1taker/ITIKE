@@ -39,6 +39,7 @@ import {
   initialize as initializeTripSeats,
   list as listTripSeats,
 } from "../controllers/tripSeat.controller.js";
+import cancellationPolicyRoutes from "./cancellation.routes.js";
 import { authenticate } from "../middleware/auth.middleware.js";
 import { authorizeRoles } from "../middleware/role.middleware.js";
 import { requireCompany } from "../middleware/tenant.middleware.js";
@@ -81,8 +82,11 @@ router.get("/trips/:id", authenticate, authorizeRoles("COMPANY_ADMIN", "COMPANY_
 router.patch("/trips/:id", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, updateTrip);
 router.patch("/trips/:id/status", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, updateTripStatus);
 
-// ---------- Trip seats (inventory) ----------
+// ---------- Trip seats ----------
 router.post("/trips/:id/initialize-seats", authenticate, authorizeRoles("COMPANY_ADMIN"), requireCompany, initializeTripSeats);
 router.get("/trips/:id/seats", authenticate, authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"), requireCompany, listTripSeats);
+
+// ---------- Cancellation Policy ----------
+router.use("/cancellation-policy", cancellationPolicyRoutes);
 
 export default router;
