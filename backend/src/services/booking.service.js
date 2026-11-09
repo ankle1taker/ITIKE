@@ -408,6 +408,17 @@ export const getMyBookingById = async ({ id, customerId }) => {
         select: { id: true, status: true, expiresAt: true, releasedAt: true },
       },
       dropoffStop: { select: { id: true, name: true, sequence: true } },
+      payment: {
+        select: {
+          id: true,
+          status: true,
+          method: true,
+          provider: true,
+          providerReference: true,
+          paidAt: true,
+          amount: true,
+        },
+      },
     },
   });
 
@@ -417,7 +428,6 @@ export const getMyBookingById = async ({ id, customerId }) => {
 
   return booking;
 };
-
 export const releaseBooking = async ({ id, customerId }) => {
   validateId(id, "Booking ID");
 

@@ -5,15 +5,28 @@ import platformRoutes from "./routes/platform.routes.js";
 import companyRoutes from "./routes/company.routes.js";
 import customerRoutes from "./routes/customer.routes.js";
 import publicRoutes from "./routes/public.routes.js";
+import webhooksRoutes from "./routes/webhooks.routes.js";
+import { getProvider } from "./services/payments/index.js";
 
 const app = express();
+
+// Capture raw body for webhook signature verification.
+// For all other routes, use express.json() normally.
+app.use(
+  "/api/webhooks",
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf.toString("utf8");
+    },
+  }),
+  webhooksRoutes,
+);
 
 app.use(express.json());
 
 app.get("/health", async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
-
     res.status(200).json({
       success: true,
       service: "Itike API",
@@ -22,7 +35,6 @@ app.get("/health", async (req, res) => {
     });
   } catch (error) {
     console.error("Database health check failed:", error);
-
     res.status(503).json({
       success: false,
       service: "Itike API",
@@ -50,9 +62,6 @@ app.use((error, req, res, _next) => {
   }
 
   const statusCode = error.statusCode || 500;
-
-  // In development, expose the real error to make debugging painless.
-  // In production, keep the response generic.
   const isDev = process.env.NODE_ENV !== "production";
 
   const body = {
@@ -80,5 +89,9 @@ app.use((error, req, res, _next) => {
 
   res.status(statusCode).json(body);
 });
+
+// Fail fast if the payment provider is misconfigured.
+// This runs at import time — the app will not start with a bad provider.
+getProvider();
 
 export default app;
