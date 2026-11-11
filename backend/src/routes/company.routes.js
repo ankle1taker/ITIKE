@@ -1,3 +1,4 @@
+import { list as listTripManifest } from "../controllers/tripManifest.controller.js";
 import { Router } from "express";
 import {
   create as createBus,
@@ -94,4 +95,12 @@ router.use("/cancellation-policy", cancellationPolicyRoutes);
 router.use("/tickets", checkInRoutes);
 // ---------- Analytics ----------
 router.use("/analytics", companyAnalyticsRouter);
+// ---------- Trip manifest ----------
+router.get(
+  "/trips/:tripId/bookings",
+  authenticate,
+  authorizeRoles("COMPANY_ADMIN", "COMPANY_OPERATOR"),
+  requireCompany,
+  listTripManifest,
+);
 export default router;

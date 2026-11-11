@@ -1,59 +1,36 @@
-/**
- * Background reconciler for PENDING payments.
- *
- * Runs every 60 seconds. For each Payment in PENDING status:
- *   - If older than 15 minutes: attempt poll; if still pending, mark FAILED
- *     and revert booking to HELD (or EXPIRED if hold is gone).
- *   - If 30 seconds to 15 minutes: attempt poll; if SUCCESS, confirm.
- *
- * This closes the failure modes:
- *   F2 — webhook dropped
- *   F3 — webhook arrived but signature failed (we already logged it)
- *   F10 — provider API down when we polled immediately
- *   F11 — customer phone lost network after PIN
- *
- * IMPORTANT: uses the same pollAndReconcile() from payment.service.js,
- * so the confirm path is identical to the webhook path.
- */
-
 import prisma from "../config/database.js";
 import { pollAndReconcile } from "./payment.service.js";
 
 const INTERVAL_MS = 60 * 1000;
 const STALE_THRESHOLD_MS = 15 * 60 * 1000;
+const LATE_SUCCESS_WINDOW_MS = 60 * 60 * 1000;
 
 let timer = null;
 let running = false;
+
+const log = (...args) => console.log("[reconciler]", ...args);
 
 const runOnce = async () => {
   if (running) return;
   running = true;
   try {
-    const cutoff = new Date(Date.now() - 30 * 1000);
+    const now = new Date();
+    const pendingCutoff = new Date(now.getTime() - 30 * 1000);
+    const failedCutoff = new Date(now.getTime() - LATE_SUCCESS_WINDOW_MS);
 
     const pendingPayments = await prisma.payment.findMany({
       where: {
         status: "PENDING",
-        createdAt: { lt: cutoff },
+        createdAt: { lt: pendingCutoff },
       },
-      select: {
-        id: true,
-        createdAt: true,
-        providerReference: true,
-      },
+      select: { id: true, createdAt: true, attemptNumber: true },
       take: 50,
     });
-
-    if (pendingPayments.length === 0) {
-      return;
-    }
 
     for (const p of pendingPayments) {
       try {
         const ageMs = Date.now() - new Date(p.createdAt).getTime();
-
         if (ageMs > STALE_THRESHOLD_MS) {
-          // Too old — mark FAILED and revert booking
           await prisma.$transaction(async (tx) => {
             await tx.payment.update({
               where: { id: p.id },
@@ -64,10 +41,19 @@ const runOnce = async () => {
               select: { bookingId: true },
             });
             if (payment) {
-              await tx.booking.updateMany({
-                where: { id: payment.bookingId, status: "PENDING_PAYMENT" },
-                data: { status: "HELD" },
+              const otherActive = await tx.payment.count({
+                where: {
+                  bookingId: payment.bookingId,
+                  status: { in: ["PENDING", "PROCESSING"] },
+                  NOT: { id: p.id },
+                },
               });
+              if (otherActive === 0) {
+                await tx.booking.updateMany({
+                  where: { id: payment.bookingId, status: "PENDING_PAYMENT" },
+                  data: { status: "HELD" },
+                });
+              }
             }
             await tx.auditLog.create({
               data: {
@@ -76,22 +62,40 @@ const runOnce = async () => {
                 action: "PAYMENT_RECONCILER_TIMEOUT",
                 entityType: "Payment",
                 entityId: p.id,
-                metadata: { reason: "15min stale", ageMs },
+                metadata: { ageMs, attemptNumber: p.attemptNumber },
               },
             });
           });
-          // eslint-disable-next-line no-console
-          console.log(`[reconciler] payment=${p.id} timed out after 15min`);
+          log(`payment=${p.id} timeout after 15min`);
         } else {
           const result = await pollAndReconcile({ paymentId: p.id });
           if (result && !result.noop) {
-            // eslint-disable-next-line no-console
-            console.log(`[reconciler] payment=${p.id} reconciled status=${result.status}`);
+            log(`payment=${p.id} reconciled status=${result.status}`);
           }
         }
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`[reconciler] payment=${p.id} failed:`, err.message);
+        log(`payment=${p.id} failed: ${err.message}`);
+      }
+    }
+
+    // F12: late-success recovery â€” poll FAILED payments for 60 min
+    const recentlyFailed = await prisma.payment.findMany({
+      where: {
+        status: "FAILED",
+        updatedAt: { gte: failedCutoff },
+      },
+      select: { id: true, updatedAt: true, attemptNumber: true },
+      take: 30,
+    });
+
+    for (const p of recentlyFailed) {
+      try {
+        const result = await pollAndReconcile({ paymentId: p.id });
+        if (result && !result.noop) {
+          log(`LATE-SUCCESS payment=${p.id} status=${result.status}`);
+        }
+      } catch (err) {
+        log(`late-poll payment=${p.id} failed: ${err.message}`);
       }
     }
   } finally {
@@ -101,8 +105,7 @@ const runOnce = async () => {
 
 export const startPaymentReconciler = () => {
   if (timer) return;
-  // eslint-disable-next-line no-console
-  console.log(`[reconciler] started (interval=${INTERVAL_MS}ms)`);
+  log(`started (interval=${INTERVAL_MS}ms)`);
   runOnce().catch(() => {});
   timer = setInterval(runOnce, INTERVAL_MS);
 };
@@ -111,7 +114,6 @@ export const stopPaymentReconciler = () => {
   if (timer) {
     clearInterval(timer);
     timer = null;
-    // eslint-disable-next-line no-console
-    console.log("[reconciler] stopped");
+    log("stopped");
   }
 };

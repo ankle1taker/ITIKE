@@ -199,8 +199,11 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
   if (status === "PENDING") {
     return { noop: true, paymentId: payment.id, status: payment.status };
   }
-
   if (status === "FAILED") {
+    // Already failed â€” noop (avoids updatedAt churn during reconciler late-polling)
+    if (payment.status === "FAILED") {
+      return { noop: true, paymentId: payment.id, status: "FAILED" };
+    }
     return prisma.$transaction(async (tx) => {
       await tx.payment.update({
         where: { id: payment.id },
@@ -418,7 +421,7 @@ export const pollAndReconcile = async ({ paymentId }) => {
  *
  * The edge case "provider succeeds but Phase 3 DB fails" leaves the
  * cancellation stuck in PROCESSING. It requires manual admin intervention
- * via forceCompleteRefund. This is deliberate Ã¢â‚¬â€ better stuck than double-refunded.
+ * via forceCompleteRefund. This is deliberate ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â better stuck than double-refunded.
  */
 export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
   const payment = await prisma.payment.findUnique({
@@ -485,7 +488,7 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
     });
   });
 
-  // PHASE 2: external provider call Ã¢â‚¬â€ outside transaction
+  // PHASE 2: external provider call ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â outside transaction
   let refundResult;
   try {
     const provider = getProvider();
@@ -513,7 +516,7 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
     );
   }
 
-  // PHASE 3b: success Ã¢â‚¬â€ mark COMPLETED and finalize booking
+  // PHASE 3b: success ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â mark COMPLETED and finalize booking
   return prisma.$transaction(async (tx) => {
     await tx.payment.update({
       where: { id: payment.id },
