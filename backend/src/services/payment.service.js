@@ -245,8 +245,11 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
   // status === "SUCCESS"
   const paidAmount = typeof amount === "number" ? amount : Number(payment.amount);
   const expectedAmount = Number(payment.booking.totalAmount);
-
   if (Math.abs(paidAmount - expectedAmount) > 0.01) {
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: "SUCCESS", paidAt: paidAt ? new Date(paidAt) : new Date() },
+    });
     return refundPayment({
       paymentId: payment.id,
       reason: `Amount mismatch: got ${paidAmount}, expected ${expectedAmount}`,
@@ -401,9 +404,34 @@ export const pollAndReconcile = async ({ paymentId }) => {
   });
 };
 
+/**
+ * Refund a SUCCESS payment using a 3-phase state machine.
+ *
+ * Phase 1 (tx): mark Cancellation.PROCESSING, commit
+ * Phase 2 (outside tx): call provider.refund()
+ * Phase 3 (tx): mark Cancellation.COMPLETED or REJECTED, commit
+ *
+ * Idempotency guard:
+ *   - Cancellation.bookingId is @unique (one per booking)
+ *   - If status is PROCESSING or COMPLETED, retry is blocked (409 or no-op)
+ *   - If status is REJECTED, retry is allowed (transitions back to PROCESSING)
+ *
+ * The edge case "provider succeeds but Phase 3 DB fails" leaves the
+ * cancellation stuck in PROCESSING. It requires manual admin intervention
+ * via forceCompleteRefund. This is deliberate Ã¢â‚¬â€ better stuck than double-refunded.
+ */
 export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
   const payment = await prisma.payment.findUnique({
     where: { id: paymentId },
+    include: {
+      booking: {
+        select: {
+          id: true,
+          status: true,
+          bookingSeat: { select: { tripSeatId: true } },
+        },
+      },
+    },
   });
   if (!payment) {
     throw createError("Payment not found.", 404);
@@ -418,21 +446,88 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
     );
   }
 
-  const provider = getProvider();
-  const refundResult = await provider.refund({
-    providerReference: payment.providerReference,
-    amount: Number(payment.amount),
-    reason,
+  const existing = await prisma.cancellation.findUnique({
+    where: { bookingId: payment.bookingId },
   });
 
-  if (!refundResult.supported) {
-    throw createError("Provider does not support refunds.", 400);
+  if (existing) {
+    if (existing.status === "COMPLETED") {
+      return { status: "REFUNDED", noop: true, cancellationId: existing.id };
+    }
+    if (existing.status === "PROCESSING") {
+      throw createError(
+        "Refund is already in progress. Await completion or admin intervention.",
+        409,
+      );
+    }
   }
 
+  // PHASE 1: transition to PROCESSING, commit
+  const cancellation = await prisma.$transaction(async (tx) => {
+    if (existing) {
+      return tx.cancellation.update({
+        where: { id: existing.id },
+        data: {
+          status: "PROCESSING",
+          failureReason: null,
+          providerRefundReference: null,
+          requestedAt: new Date(),
+        },
+      });
+    }
+    return tx.cancellation.create({
+      data: {
+        bookingId: payment.bookingId,
+        status: "PROCESSING",
+        reason: reason || null,
+        refundAmount: Number(payment.amount),
+      },
+    });
+  });
+
+  // PHASE 2: external provider call Ã¢â‚¬â€ outside transaction
+  let refundResult;
+  try {
+    const provider = getProvider();
+    refundResult = await provider.refund({
+      providerReference: payment.providerReference,
+      amount: Number(payment.amount),
+      reason: reason || "Refund",
+    });
+    if (!refundResult.supported) {
+      throw new Error("Provider does not support refunds.");
+    }
+  } catch (err) {
+    // PHASE 3a: mark REJECTED, keep payment SUCCESS
+    await prisma.cancellation.update({
+      where: { id: cancellation.id },
+      data: {
+        status: "REJECTED",
+        failureReason: err.message || "Provider refund failed",
+        processedAt: new Date(),
+      },
+    });
+    throw createError(
+      `Refund failed at provider: ${err.message}. Booking remains CONFIRMED. Retry allowed.`,
+      502,
+    );
+  }
+
+  // PHASE 3b: success Ã¢â‚¬â€ mark COMPLETED and finalize booking
   return prisma.$transaction(async (tx) => {
     await tx.payment.update({
       where: { id: payment.id },
       data: { status: "REFUNDED" },
+    });
+
+    await tx.cancellation.update({
+      where: { id: cancellation.id },
+      data: {
+        status: "COMPLETED",
+        providerRefundReference: refundResult.providerRefundReference || null,
+        failureReason: null,
+        processedAt: new Date(),
+      },
     });
 
     await tx.booking.updateMany({
@@ -440,11 +535,7 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
       data: { status: "CANCELLED" },
     });
 
-    const bookingSeats = await tx.bookingSeat.findMany({
-      where: { bookingId: payment.bookingId },
-      select: { tripSeatId: true },
-    });
-    const tripSeatIds = bookingSeats.map((b) => b.tripSeatId);
+    const tripSeatIds = payment.booking.bookingSeat.map((b) => b.tripSeatId);
     if (tripSeatIds.length > 0) {
       await tx.tripSeat.updateMany({
         where: { id: { in: tripSeatIds }, status: "CONFIRMED" },
@@ -464,11 +555,81 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
           triggeredBy,
           attemptNumber: payment.attemptNumber,
           providerRefundReference: refundResult.providerRefundReference,
+          cancellationId: cancellation.id,
         },
       },
     });
 
-    return { status: "REFUNDED", paymentId: payment.id };
+    return {
+      status: "REFUNDED",
+      paymentId: payment.id,
+      cancellationId: cancellation.id,
+    };
+  });
+};
+
+/**
+ * Admin recovery: force-complete a stuck PROCESSING refund.
+ * Used when provider succeeded but Phase 3 DB update failed.
+ * Marks the refund COMPLETED and logs an audit entry.
+ */
+export const forceCompleteRefund = async ({ cancellationId, actorId, note }) => {
+  const cancellation = await prisma.cancellation.findUnique({
+    where: { id: cancellationId },
+    include: { booking: { select: { id: true } } },
+  });
+  if (!cancellation) {
+    throw createError("Cancellation not found.", 404);
+  }
+  if (cancellation.status !== "PROCESSING") {
+    throw createError(
+      `Only PROCESSING cancellations can be force-completed. Current: ${cancellation.status}.`,
+      409,
+    );
+  }
+
+  const payment = await prisma.payment.findFirst({
+    where: { bookingId: cancellation.bookingId },
+    orderBy: { attemptNumber: "desc" },
+  });
+
+  return prisma.$transaction(async (tx) => {
+    if (payment && payment.status === "SUCCESS") {
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: { status: "REFUNDED" },
+      });
+    }
+
+    await tx.cancellation.update({
+      where: { id: cancellationId },
+      data: {
+        status: "COMPLETED",
+        processedAt: new Date(),
+        failureReason: null,
+      },
+    });
+
+    await tx.booking.updateMany({
+      where: { id: cancellation.bookingId },
+      data: { status: "CANCELLED" },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        companyId: null,
+        actorId,
+        action: "REFUND_FORCE_COMPLETED_BY_ADMIN",
+        entityType: "Cancellation",
+        entityId: cancellationId,
+        metadata: {
+          note: note || "Manual admin completion after PROCESSING state",
+          paymentId: payment?.id,
+        },
+      },
+    });
+
+    return { cancellationId, status: "COMPLETED" };
   });
 };
 

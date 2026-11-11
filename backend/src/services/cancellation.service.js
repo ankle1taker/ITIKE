@@ -22,13 +22,6 @@ const validateId = (id, fieldName = "ID") => {
   }
 };
 
-/**
- * Resolve the cancellation policy for a booking.
- * Priority:
- *   1. booking.termsSnapshot.policy (set at booking time — frozen for the booking's life)
- *   2. company.cancellationPolicy (live policy)
- *   3. DEFAULT_POLICY
- */
 const resolvePolicyForBooking = async (tx, booking) => {
   const snapshot = booking.termsSnapshot;
   if (snapshot && snapshot.policy) {
@@ -58,9 +51,6 @@ const resolvePolicyForBooking = async (tx, booking) => {
   return { ...DEFAULT_POLICY, source: "default" };
 };
 
-/**
- * Compute refund percentage based on time-to-departure.
- */
 const computeRefundPercentage = (policy, departureTime, now) => {
   const departure = new Date(departureTime);
   const hoursBeforeDeparture = (departure.getTime() - now.getTime()) / HOUR_MS;
@@ -79,15 +69,9 @@ const computeRefundPercentage = (policy, departureTime, now) => {
 
 const round2 = (num) => Math.round(num * 100) / 100;
 
-/**
- * Cancel a CONFIRMED booking and refund per policy.
- * Synchronous + atomic: if refund fails, whole cancellation rolls back.
- */
 export const cancelBooking = async ({ bookingId, customerId, reason }) => {
   validateId(bookingId, "Booking ID");
 
-  // Pre-check (outside transaction) to fail fast with clear error before we
-  // hit the provider. The real check happens inside the transaction.
   const preCheck = await prisma.booking.findFirst({
     where: { id: bookingId, customerId },
     select: {
@@ -102,8 +86,7 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
   }
   if (preCheck.status !== "CONFIRMED") {
     throw createError(
-      `Only CONFIRMED bookings can be cancelled. Current status: ${preCheck.status}. ` +
-        `Use the release endpoint for unpaid bookings.`,
+      `Only CONFIRMED bookings can be cancelled. Current status: ${preCheck.status}. Use the release endpoint for unpaid bookings.`,
       409,
     );
   }
@@ -111,7 +94,6 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
     throw createError("Cannot cancel a booking after departure.", 409);
   }
 
-  // Full load for policy resolution + refund calculation
   const booking = await prisma.booking.findFirst({
     where: { id: bookingId, customerId },
     include: {
@@ -123,28 +105,38 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
         },
       },
       payments: {
-        select: { id: true, status: true, provider: true, providerReference: true },
+        select: {
+          id: true,
+          attemptNumber: true,
+          status: true,
+          provider: true,
+          providerReference: true,
+        },
         orderBy: { attemptNumber: "desc" },
-        take: 1,
       },
       ticket: { select: { id: true, status: true } },
       bookingSeat: { select: { tripSeatId: true } },
-      cancellation: { select: { id: true } },
+      cancellation: { select: { id: true, status: true } },
     },
   });
 
   if (booking.cancellation) {
-    throw createError("A cancellation already exists for this booking.", 409);
-  }
-      const successfulPayment = booking.payments.find((p) => p.status === "SUCCESS");
-    if (!successfulPayment) {
-    throw createError(
-      "Booking has no successful payment to refund.",
-      409,
-    );
+    if (booking.cancellation.status === "PROCESSING") {
+      throw createError(
+        "A refund for this booking is already in progress. Contact support if it does not complete.",
+        409,
+      );
+    }
+    if (booking.cancellation.status === "COMPLETED") {
+      throw createError("This booking is already cancelled.", 409);
+    }
   }
 
-  // Resolve policy + compute refund
+  const successfulPayment = booking.payments.find((p) => p.status === "SUCCESS");
+  if (!successfulPayment) {
+    throw createError("Booking has no successful payment to refund.", 409);
+  }
+
   const now = new Date();
   const policy = await resolvePolicyForBooking(prisma, booking);
   const { pct, tier } = computeRefundPercentage(
@@ -155,91 +147,126 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
   const totalAmount = Number(booking.totalAmount);
   const refundAmount = round2((totalAmount * pct) / 100);
 
-  // Attempt refund first, before the DB transaction. If provider fails, we
-  // abort early — booking stays CONFIRMED, customer can retry.
   let refundResult;
   if (refundAmount > 0) {
     try {
-           refundResult = await refundPayment({
+      refundResult = await refundPayment({
         paymentId: successfulPayment.id,
         reason: reason || `Customer cancellation (${tier}, ${pct}%)`,
         triggeredBy: "customer_cancel",
       });
     } catch (err) {
       throw createError(
-        `Refund failed at provider: ${err.message}. Booking remains CONFIRMED. Please retry.`,
+        `Refund failed: ${err.message}. Booking remains CONFIRMED. Please retry.`,
         502,
       );
     }
   } else {
-    // Zero refund — still need to transition payment to REFUNDED (amount 0)
-    // and cancel everything else. Do it inside the transaction below.
-    refundResult = { status: "REFUNDED", paymentId: booking.payment.id, zero: true };
-  }
+    refundResult = { status: "REFUNDED", paymentId: successfulPayment.id, zero: true };
 
-  // Now transact the cancellation records.
-  return prisma.$transaction(async (tx) => {
-    const cancellation = await tx.cancellation.create({
-      data: {
-        bookingId: booking.id,
-        status: "COMPLETED",
-        reason: reason || null,
-        refundAmount,
-        requestedAt: now,
-        processedAt: now,
-      },
-    });
+    await prisma.$transaction(async (tx) => {
+      if (booking.cancellation) {
+        await tx.cancellation.update({
+          where: { id: booking.cancellation.id },
+          data: {
+            status: "COMPLETED",
+            refundAmount,
+            processedAt: now,
+            failureReason: null,
+          },
+        });
+      } else {
+        await tx.cancellation.create({
+          data: {
+            bookingId: booking.id,
+            status: "COMPLETED",
+            reason: reason || null,
+            refundAmount,
+            requestedAt: now,
+            processedAt: now,
+          },
+        });
+      }
 
-    await tx.booking.update({
-      where: { id: booking.id },
-      data: { status: "CANCELLED" },
-    });
-
-    if (booking.ticket && booking.ticket.status !== "CANCELLED") {
-      await tx.ticket.update({
-        where: { id: booking.ticket.id },
+      await tx.booking.update({
+        where: { id: booking.id },
         data: { status: "CANCELLED" },
       });
-    }
 
-    const tripSeatIds = booking.bookingSeat.map((bs) => bs.tripSeatId);
-    if (tripSeatIds.length > 0) {
-      await tx.tripSeat.updateMany({
-        where: { id: { in: tripSeatIds }, status: "CONFIRMED" },
-        data: { status: "AVAILABLE" },
-      });
-    }
+      if (booking.ticket && booking.ticket.status !== "CANCELLED") {
+        await tx.ticket.update({
+          where: { id: booking.ticket.id },
+          data: { status: "CANCELLED" },
+        });
+      }
 
-    await tx.auditLog.create({
-      data: {
-        companyId: booking.trip.companyId,
-        actorId: customerId,
-        action: "BOOKING_CANCELLED_BY_CUSTOMER",
-        entityType: "Booking",
-        entityId: booking.id,
-        metadata: {
-          refundAmount,
-          refundPct: pct,
-          policyTier: tier,
-          policySource: policy.source,
-          paymentId: booking.payment.id,
+      const tripSeatIds = booking.bookingSeat.map((bs) => bs.tripSeatId);
+      if (tripSeatIds.length > 0) {
+        await tx.tripSeat.updateMany({
+          where: { id: { in: tripSeatIds }, status: "CONFIRMED" },
+          data: { status: "AVAILABLE" },
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          companyId: booking.trip.companyId,
+          actorId: customerId,
+          action: "BOOKING_CANCELLED_BY_CUSTOMER",
+          entityType: "Booking",
+          entityId: booking.id,
+          metadata: {
+            refundAmount,
+            refundPct: pct,
+            policyTier: tier,
+            policySource: policy.source,
+            paymentId: successfulPayment.id,
+          },
         },
-      },
+      });
     });
+  }
 
-    return {
-      cancellationId: cancellation.id,
-      bookingStatus: "CANCELLED",
-      refundAmount,
-      refundPct: pct,
-      policyTier: tier,
-    };
-  });
+  // Handle non-zero refund: refundPayment already updated Payment.status=REFUNDED
+  // and Cancellation.status=COMPLETED inside its transaction. We only need to
+  // cancel ticket + release remaining state here.
+  if (refundAmount > 0 && refundResult && refundResult.status === "REFUNDED") {
+    await prisma.$transaction(async (tx) => {
+      if (booking.ticket && booking.ticket.status !== "CANCELLED") {
+        await tx.ticket.update({
+          where: { id: booking.ticket.id },
+          data: { status: "CANCELLED" },
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          companyId: booking.trip.companyId,
+          actorId: customerId,
+          action: "BOOKING_CANCELLED_BY_CUSTOMER",
+          entityType: "Booking",
+          entityId: booking.id,
+          metadata: {
+            refundAmount,
+            refundPct: pct,
+            policyTier: tier,
+            policySource: policy.source,
+            paymentId: successfulPayment.id,
+          },
+        },
+      });
+    });
+  }
+
+  return {
+    cancellationId: booking.cancellation?.id || refundResult?.cancellationId || null,
+    bookingStatus: "CANCELLED",
+    refundAmount,
+    refundPct: pct,
+    policyTier: tier,
+  };
 };
 
-/**
- * Get the company's cancellation policy (or defaults if none set).
- */
 export const getCompanyPolicy = async ({ companyId }) => {
   const policy = await prisma.cancellationPolicy.findUnique({
     where: { companyId },
@@ -263,9 +290,6 @@ export const getCompanyPolicy = async ({ companyId }) => {
   };
 };
 
-/**
- * Upsert the company's cancellation policy.
- */
 export const upsertCompanyPolicy = async ({
   companyId,
   actorId,
@@ -325,10 +349,6 @@ export const upsertCompanyPolicy = async ({
   });
 };
 
-/**
- * Snapshot the company's current policy into a booking's termsSnapshot.
- * Called from createBooking (booking.service.js) at booking creation.
- */
 export const buildPolicySnapshotForBooking = async (companyId) => {
   const policy = await prisma.cancellationPolicy.findUnique({
     where: { companyId },

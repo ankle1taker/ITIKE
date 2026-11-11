@@ -17,6 +17,7 @@ import {
   replaceStops as replaceRouteStops,
 } from "../controllers/route.controller.js";
 import { sweep as sweepBookings } from "../controllers/bookingSweep.controller.js";
+import { forceComplete as forceCompleteRefund } from "../controllers/refundAdmin.controller.js";
 import { platformAnalyticsRouter } from "./analytics.routes.js";
 
 const router = Router();
@@ -38,6 +39,14 @@ router.put("/routes/:id/stops", authenticate, authorizeRoles("PLATFORM_ADMIN"), 
 
 // ---------- Bookings (admin ops) ----------
 router.post("/bookings/sweep", authenticate, authorizeRoles("PLATFORM_ADMIN"), sweepBookings);
+
+// ---------- Refund recovery ----------
+router.post(
+  "/refunds/:id/force-complete",
+  authenticate,
+  authorizeRoles("PLATFORM_ADMIN"),
+  forceCompleteRefund,
+);
 
 // ---------- Analytics ----------
 router.use("/analytics", platformAnalyticsRouter);

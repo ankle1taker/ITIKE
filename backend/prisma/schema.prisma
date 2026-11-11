@@ -102,6 +102,7 @@ enum HoldStatus {
 enum CancellationStatus {
   REQUESTED
   APPROVED
+  PROCESSING
   REJECTED
   COMPLETED
 }
@@ -416,13 +417,15 @@ model CancellationPolicy {
 }
 
 model Cancellation {
-  id           String             @id @default(uuid())
-  bookingId    String             @unique
-  status       CancellationStatus @default(REQUESTED)
-  reason       String?
-  refundAmount Decimal            @db.Decimal(12, 2)
-  requestedAt  DateTime           @default(now())
-  processedAt  DateTime?
+  id                      String             @id @default(uuid())
+  bookingId               String             @unique
+  status                  CancellationStatus @default(REQUESTED)
+  reason                  String?
+  refundAmount            Decimal            @db.Decimal(12, 2)
+  providerRefundReference String?
+  failureReason           String?
+  requestedAt             DateTime           @default(now())
+  processedAt             DateTime?
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
 
