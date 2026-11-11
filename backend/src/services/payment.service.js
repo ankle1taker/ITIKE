@@ -1,6 +1,7 @@
 import prisma from "../config/database.js";
 import { getProvider } from "./payments/index.js";
 import { issueTicketForBookingInTx } from "./ticket.service.js";
+import { queueNotification } from "./notification.service.js";
 
 const HOLD_EXTENSION_MINUTES = 10;
 
@@ -199,8 +200,8 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
   if (status === "PENDING") {
     return { noop: true, paymentId: payment.id, status: payment.status };
   }
+
   if (status === "FAILED") {
-    // Already failed â€” noop (avoids updatedAt churn during reconciler late-polling)
     if (payment.status === "FAILED") {
       return { noop: true, paymentId: payment.id, status: "FAILED" };
     }
@@ -241,6 +242,32 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
           },
         },
       });
+
+      // Notify customer (fire-and-forget)
+      try {
+        const fullBooking = await tx.booking.findUnique({
+          where: { id: payment.booking.id },
+          select: {
+            customerId: true,
+            bookingNumber: true,
+            passengers: { select: { phone: true }, take: 1 },
+          },
+        });
+        if (fullBooking) {
+          queueNotification({
+            recipientId: fullBooking.customerId,
+            recipientPhone: fullBooking.passengers[0]?.phone || null,
+            channel: "SMS",
+            template: "PAYMENT_FAILED",
+            payload: { bookingNumber: fullBooking.bookingNumber },
+          }).catch((err) => {
+            console.error("[notifications] PAYMENT_FAILED queue failed:", err.message);
+          });
+        }
+      } catch (err) {
+        console.error("[notifications] PAYMENT_FAILED lookup failed:", err.message);
+      }
+
       return { paymentId: payment.id, status: "FAILED" };
     });
   }
@@ -248,6 +275,7 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
   // status === "SUCCESS"
   const paidAmount = typeof amount === "number" ? amount : Number(payment.amount);
   const expectedAmount = Number(payment.booking.totalAmount);
+
   if (Math.abs(paidAmount - expectedAmount) > 0.01) {
     await prisma.payment.update({
       where: { id: payment.id },
@@ -364,6 +392,35 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
       },
     });
 
+    // Notify customer (fire-and-forget)
+    try {
+      const fullBooking = await tx.booking.findUnique({
+        where: { id: payment.booking.id },
+        select: {
+          customerId: true,
+          bookingNumber: true,
+          totalAmount: true,
+          passengers: { select: { phone: true }, take: 1 },
+        },
+      });
+      if (fullBooking) {
+        queueNotification({
+          recipientId: fullBooking.customerId,
+          recipientPhone: fullBooking.passengers[0]?.phone || null,
+          channel: "SMS",
+          template: "PAYMENT_SUCCEEDED",
+          payload: {
+            bookingNumber: fullBooking.bookingNumber,
+            amount: Number(fullBooking.totalAmount),
+          },
+        }).catch((err) => {
+          console.error("[notifications] PAYMENT_SUCCEEDED queue failed:", err.message);
+        });
+      }
+    } catch (err) {
+      console.error("[notifications] PAYMENT_SUCCEEDED lookup failed:", err.message);
+    }
+
     return { paymentId: payment.id, status: "SUCCESS" };
   });
 };
@@ -407,22 +464,6 @@ export const pollAndReconcile = async ({ paymentId }) => {
   });
 };
 
-/**
- * Refund a SUCCESS payment using a 3-phase state machine.
- *
- * Phase 1 (tx): mark Cancellation.PROCESSING, commit
- * Phase 2 (outside tx): call provider.refund()
- * Phase 3 (tx): mark Cancellation.COMPLETED or REJECTED, commit
- *
- * Idempotency guard:
- *   - Cancellation.bookingId is @unique (one per booking)
- *   - If status is PROCESSING or COMPLETED, retry is blocked (409 or no-op)
- *   - If status is REJECTED, retry is allowed (transitions back to PROCESSING)
- *
- * The edge case "provider succeeds but Phase 3 DB fails" leaves the
- * cancellation stuck in PROCESSING. It requires manual admin intervention
- * via forceCompleteRefund. This is deliberate ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â better stuck than double-refunded.
- */
 export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
   const payment = await prisma.payment.findUnique({
     where: { id: paymentId },
@@ -465,7 +506,6 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
     }
   }
 
-  // PHASE 1: transition to PROCESSING, commit
   const cancellation = await prisma.$transaction(async (tx) => {
     if (existing) {
       return tx.cancellation.update({
@@ -488,7 +528,6 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
     });
   });
 
-  // PHASE 2: external provider call ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â outside transaction
   let refundResult;
   try {
     const provider = getProvider();
@@ -501,7 +540,6 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
       throw new Error("Provider does not support refunds.");
     }
   } catch (err) {
-    // PHASE 3a: mark REJECTED, keep payment SUCCESS
     await prisma.cancellation.update({
       where: { id: cancellation.id },
       data: {
@@ -516,7 +554,6 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
     );
   }
 
-  // PHASE 3b: success ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â mark COMPLETED and finalize booking
   return prisma.$transaction(async (tx) => {
     await tx.payment.update({
       where: { id: payment.id },
@@ -571,11 +608,6 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
   });
 };
 
-/**
- * Admin recovery: force-complete a stuck PROCESSING refund.
- * Used when provider succeeded but Phase 3 DB update failed.
- * Marks the refund COMPLETED and logs an audit entry.
- */
 export const forceCompleteRefund = async ({ cancellationId, actorId, note }) => {
   const cancellation = await prisma.cancellation.findUnique({
     where: { id: cancellationId },

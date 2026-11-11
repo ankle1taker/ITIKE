@@ -106,7 +106,16 @@ enum CancellationStatus {
   REJECTED
   COMPLETED
 }
+enum NotificationChannel {
+  SMS
+  EMAIL
+}
 
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
 model Company {
   id                 String        @id @default(uuid())
   name               String
@@ -145,6 +154,7 @@ model User {
 
   bookings  Booking[]  @relation("BookingCustomer")
   auditLogs AuditLog[] @relation("AuditActor")
+    notifications Notification[]
 
   @@index([companyId])
   @@index([role])
@@ -448,4 +458,27 @@ model AuditLog {
   @@index([companyId, createdAt])
   @@index([actorId])
   @@index([entityType, entityId])
+}
+model Notification {
+  id                String             @id @default(uuid())
+  recipientId       String?
+  recipientPhone    String?
+  recipientEmail    String?
+  channel           NotificationChannel
+  template          String
+  payload           Json?
+  status            NotificationStatus @default(PENDING)
+  providerReference String?
+  failureReason     String?
+  attempts          Int                @default(0)
+  sentAt            DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  recipient User? @relation(fields: [recipientId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([recipientId])
+  @@index([createdAt])
+  @@index([status, attempts])
 }

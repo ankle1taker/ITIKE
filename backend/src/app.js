@@ -9,6 +9,8 @@ import webhooksRoutes from "./routes/webhooks.routes.js";
 import ticketsRoutes from "./routes/tickets.routes.js";
 import { getProvider } from "./services/payments/index.js";
 import { startPaymentReconciler } from "./services/paymentReconciler.service.js";
+import { startNotificationDispatcher } from "./services/notificationDispatcher.service.js";
+import { getProvider as getNotificationProvider } from "./services/notifications/index.js";
 
 const app = express();
 
@@ -91,10 +93,19 @@ app.use((error, req, res, _next) => {
   res.status(statusCode).json(body);
 });
 
+// Fail fast if payment provider is misconfigured
 getProvider();
 
+// Fail fast if notification provider is misconfigured
+getNotificationProvider();
+
+// Background services
 if (process.env.ENABLE_PAYMENT_RECONCILER === "true") {
   startPaymentReconciler();
+}
+
+if (process.env.ENABLE_NOTIFICATION_DISPATCHER !== "false") {
+  startNotificationDispatcher();
 }
 
 export default app;

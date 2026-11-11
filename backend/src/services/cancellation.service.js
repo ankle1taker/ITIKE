@@ -1,5 +1,6 @@
 import prisma from "../config/database.js";
 import { refundPayment } from "./payment.service.js";
+import { queueNotification } from "./notification.service.js";
 
 const DEFAULT_POLICY = {
   moreThan24HoursPct: 90,
@@ -117,6 +118,7 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
       ticket: { select: { id: true, status: true } },
       bookingSeat: { select: { tripSeatId: true } },
       cancellation: { select: { id: true, status: true } },
+      passengers: { select: { id: true, phone: true }, take: 1 },
     },
   });
 
@@ -227,9 +229,6 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
     });
   }
 
-  // Handle non-zero refund: refundPayment already updated Payment.status=REFUNDED
-  // and Cancellation.status=COMPLETED inside its transaction. We only need to
-  // cancel ticket + release remaining state here.
   if (refundAmount > 0 && refundResult && refundResult.status === "REFUNDED") {
     await prisma.$transaction(async (tx) => {
       if (booking.ticket && booking.ticket.status !== "CANCELLED") {
@@ -257,6 +256,20 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
       });
     });
   }
+
+  // Notify customer (fire-and-forget)
+  queueNotification({
+    recipientId: customerId,
+    recipientPhone: booking.passengers[0]?.phone || null,
+    channel: "SMS",
+    template: "BOOKING_CANCELLED",
+    payload: {
+      bookingNumber: booking.bookingNumber,
+      refundAmount,
+    },
+  }).catch((err) => {
+    console.error("[notifications] BOOKING_CANCELLED queue failed:", err.message);
+  });
 
   return {
     cancellationId: booking.cancellation?.id || refundResult?.cancellationId || null,

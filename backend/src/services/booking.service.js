@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import prisma from "../config/database.js";
 import { reconcileTripSeatsInTx } from "./tripSeat.service.js";
 import { buildPolicySnapshotForBooking } from "./cancellation.service.js";
+import { queueNotification } from "./notification.service.js";
 const HOLD_MINUTES = 10;
 
 const createError = (message, statusCode) => {
@@ -319,7 +320,20 @@ export const createBooking = async ({
         dropoffStop: { select: { id: true, name: true, sequence: true } },
       },
     });
-
+    // Fire-and-forget notification (never blocks the booking response)
+    queueNotification({
+      recipientId: full.customerId,
+      recipientPhone: full.passengers[0]?.phone,
+      channel: "SMS",
+      template: "BOOKING_CREATED",
+      payload: {
+        bookingNumber: full.bookingNumber,
+        totalAmount: Number(full.totalAmount),
+        expiresInMinutes: 10,
+      },
+    }).catch((err) => {
+      console.error("[notifications] BOOKING_CREATED queue failed:", err.message);
+    });
     return full;
   });
 };
@@ -552,7 +566,7 @@ export const releaseBooking = async ({ id, customerId }) => {
 };
 
 /**
- * Global sweep — releases ALL expired holds across the entire platform.
+ * Global sweep â€” releases ALL expired holds across the entire platform.
  * Used by PLATFORM_ADMIN via POST /api/platform/bookings/sweep.
  * Does NOT lock seats per-trip; each expired hold is released atomically.
  */

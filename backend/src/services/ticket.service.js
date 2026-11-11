@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import prisma from "../config/database.js";
+import { queueNotification } from "./notification.service.js";
 
 const QR_EXPIRY_HOURS_AFTER_DEPARTURE = 24;
 
@@ -45,13 +46,6 @@ const signQrPayload = ({ ticketId, bookingId, ticketNumber, customerId, expiresA
   );
 };
 
-/**
- * Generate a ticket for a CONFIRMED booking.
- * Called from payment.service.js inside the payment-confirmation transaction.
- * Uses the caller's `tx` — do not open a nested transaction.
- *
- * Idempotent: if a ticket already exists for the booking, returns it unchanged.
- */
 export const issueTicketForBookingInTx = async (tx, { bookingId }) => {
   const existing = await tx.ticket.findUnique({
     where: { bookingId },
@@ -92,8 +86,6 @@ export const issueTicketForBookingInTx = async (tx, { bookingId }) => {
 
   const ticketNumber = generateTicketNumber();
 
-  // Create ticket first with a placeholder qrCodeValue, then sign, then update
-  // (JWT needs the ticket ID which only exists after insert).
   const ticket = await tx.ticket.create({
     data: {
       bookingId: booking.id,
@@ -132,15 +124,50 @@ export const issueTicketForBookingInTx = async (tx, { bookingId }) => {
     },
   });
 
+  // Notify customer that ticket is ready (fire-and-forget)
+  try {
+    const fullBooking = await tx.booking.findUnique({
+      where: { id: bookingId },
+      select: {
+        customerId: true,
+        bookingNumber: true,
+        passengers: { select: { phone: true }, take: 1 },
+        trip: {
+          select: {
+            departureTime: true,
+            route: { select: { origin: true, destination: true } },
+          },
+        },
+      },
+    });
+    if (fullBooking) {
+      const route = `${fullBooking.trip.route.origin} â†’ ${fullBooking.trip.route.destination}`;
+      const departure = new Date(fullBooking.trip.departureTime)
+        .toISOString()
+        .slice(0, 16)
+        .replace("T", " ");
+      queueNotification({
+        recipientId: fullBooking.customerId,
+        recipientPhone: fullBooking.passengers[0]?.phone || null,
+        channel: "SMS",
+        template: "TICKET_ISSUED",
+        payload: {
+          bookingNumber: fullBooking.bookingNumber,
+          ticketNumber: finalTicket.ticketNumber,
+          route,
+          departureTime: departure,
+        },
+      }).catch((err) => {
+        console.error("[notifications] TICKET_ISSUED queue failed:", err.message);
+      });
+    }
+  } catch (err) {
+    console.error("[notifications] TICKET_ISSUED lookup failed:", err.message);
+  }
+
   return finalTicket;
 };
 
-/**
- * Verify a QR code. Returns ticket status + summary.
- * No PII (name, phone) returned.
- * Signature failures → 400; DB-missing ticket → 400 (safer than 404 — the QR
- * was valid but the ticket was deleted; don't reveal).
- */
 export const verifyQrCode = async ({ qrCode }) => {
   const secret = getQrSecret();
 
@@ -196,7 +223,7 @@ export const verifyQrCode = async ({ qrCode }) => {
     bookingStatus: ticket.booking.status,
     trip: {
       departureTime: ticket.booking.trip.departureTime,
-      route: `${ticket.booking.trip.route.origin} → ${ticket.booking.trip.route.destination}`,
+      route: `${ticket.booking.trip.route.origin} â†’ ${ticket.booking.trip.route.destination}`,
     },
     seatNumbers: ticket.booking.bookingSeat.map(
       (bs) => bs.tripSeat.seat.seatNumber,
@@ -206,9 +233,6 @@ export const verifyQrCode = async ({ qrCode }) => {
   };
 };
 
-/**
- * Fetch the ticket for a booking. Ownership enforced via customerId.
- */
 export const getTicketForBooking = async ({ bookingId, customerId }) => {
   const booking = await prisma.booking.findFirst({
     where: { id: bookingId, customerId },
@@ -261,9 +285,6 @@ export const getTicketForBooking = async ({ bookingId, customerId }) => {
   return ticket;
 };
 
-/**
- * List tickets for the authenticated customer.
- */
 export const listMyTickets = async ({ customerId, page = 1, limit = 20, status }) => {
   if (!Number.isInteger(page) || page < 1) {
     throw createError("Page must be a positive integer.", 400);
