@@ -3,7 +3,6 @@ import { getProvider } from "./payments/index.js";
 import { issueTicketForBookingInTx } from "./ticket.service.js";
 
 const HOLD_EXTENSION_MINUTES = 10;
-const MAX_REFUND_LOOKBACK_MINUTES = 15;
 
 const createError = (message, statusCode) => {
   const error = new Error(message);
@@ -33,7 +32,14 @@ export const initiatePayment = async ({
       totalAmount: true,
       expiresAt: true,
       bookingNumber: true,
-      payment: { select: { id: true } },
+      payments: {
+        select: {
+          id: true,
+          status: true,
+          attemptNumber: true,
+        },
+        orderBy: { attemptNumber: "desc" },
+      },
     },
   });
 
@@ -49,9 +55,22 @@ export const initiatePayment = async ({
   if (booking.expiresAt && new Date(booking.expiresAt) <= new Date()) {
     throw createError("Booking has expired.", 409);
   }
-  if (booking.payment) {
-    throw createError("A payment for this booking already exists.", 409);
+
+  const activeAttempt = booking.payments.find(
+    (p) => p.status === "PENDING" || p.status === "PROCESSING",
+  );
+  if (activeAttempt) {
+    throw createError(
+      `A payment attempt is already in progress (attempt ${activeAttempt.attemptNumber}).`,
+      409,
+    );
   }
+  const successfulAttempt = booking.payments.find((p) => p.status === "SUCCESS");
+  if (successfulAttempt) {
+    throw createError("This booking has already been paid.", 409);
+  }
+
+  const attemptNumber = (booking.payments[0]?.attemptNumber || 0) + 1;
 
   const provider = getProvider();
   const requestedProvider = providerName;
@@ -90,6 +109,7 @@ export const initiatePayment = async ({
     const payment = await tx.payment.create({
       data: {
         bookingId: booking.id,
+        attemptNumber,
         amount,
         method: "MOBILE_MONEY",
         provider: provider.name,
@@ -115,6 +135,7 @@ export const initiatePayment = async ({
         entityId: payment.id,
         metadata: {
           bookingId: booking.id,
+          attemptNumber,
           amount,
           provider: provider.name,
           providerReference: providerResponse.providerReference,
@@ -124,6 +145,7 @@ export const initiatePayment = async ({
 
     return {
       paymentId: payment.id,
+      attemptNumber,
       providerReference: providerResponse.providerReference,
       status: payment.status,
       redirectUrl: providerResponse.redirectUrl || null,
@@ -184,7 +206,15 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
         where: { id: payment.id },
         data: { status: "FAILED" },
       });
+      const otherActive = await tx.payment.count({
+        where: {
+          bookingId: payment.booking.id,
+          status: { in: ["PENDING", "PROCESSING"] },
+          NOT: { id: payment.id },
+        },
+      });
       if (
+        otherActive === 0 &&
         payment.booking.status === "PENDING_PAYMENT" &&
         payment.booking.expiresAt &&
         new Date(payment.booking.expiresAt) > new Date()
@@ -201,7 +231,11 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
           action: "PAYMENT_FAILED",
           entityType: "Payment",
           entityId: payment.id,
-          metadata: { providerReference, reason: "provider reported FAILED" },
+          metadata: {
+            providerReference,
+            attemptNumber: payment.attemptNumber,
+            reason: "provider reported FAILED",
+          },
         },
       });
       return { paymentId: payment.id, status: "FAILED" };
@@ -247,6 +281,7 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
           entityId: payment.id,
           metadata: {
             providerReference,
+            attemptNumber: payment.attemptNumber,
             reason: "seats no longer held",
             tripSeatIds,
           },
@@ -279,6 +314,15 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
       },
     });
 
+    await tx.payment.updateMany({
+      where: {
+        bookingId: payment.booking.id,
+        status: { in: ["PENDING", "PROCESSING"] },
+        NOT: { id: payment.id },
+      },
+      data: { status: "FAILED" },
+    });
+
     await tx.booking.update({
       where: { id: payment.booking.id },
       data: { status: "CONFIRMED", expiresAt: null },
@@ -289,7 +333,6 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
       data: { status: "CONFIRMED" },
     });
 
-    // Issue ticket — idempotent; safe on duplicate webhook retries
     await issueTicketForBookingInTx(tx, {
       bookingId: payment.booking.id,
     });
@@ -309,6 +352,7 @@ export const handleWebhook = async ({ providerName, headers, rawBody }) => {
         metadata: {
           providerReference,
           bookingId: payment.booking.id,
+          attemptNumber: payment.attemptNumber,
           amount: paidAmount,
         },
       },
@@ -418,6 +462,7 @@ export const refundPayment = async ({ paymentId, reason, triggeredBy }) => {
         metadata: {
           reason,
           triggeredBy,
+          attemptNumber: payment.attemptNumber,
           providerRefundReference: refundResult.providerRefundReference,
         },
       },
@@ -435,14 +480,16 @@ export const getPaymentStatusForBooking = async ({ bookingId, customerId }) => {
     select: {
       id: true,
       status: true,
-      payment: {
+      payments: {
         select: {
           id: true,
+          attemptNumber: true,
           status: true,
           provider: true,
           providerReference: true,
           paidAt: true,
         },
+        orderBy: { attemptNumber: "desc" },
       },
     },
   });
@@ -450,9 +497,12 @@ export const getPaymentStatusForBooking = async ({ bookingId, customerId }) => {
     throw createError("Booking not found.", 404);
   }
 
+  const latest = booking.payments[0] || null;
+
   return {
     bookingId: booking.id,
     bookingStatus: booking.status,
-    payment: booking.payment,
+    payment: latest,
+    payments: booking.payments,
   };
 };

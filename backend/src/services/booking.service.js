@@ -412,9 +412,10 @@ export const getMyBookingById = async ({ id, customerId }) => {
         select: { id: true, status: true, expiresAt: true, releasedAt: true },
       },
       dropoffStop: { select: { id: true, name: true, sequence: true } },
-      payment: {
+       payments: {
         select: {
           id: true,
+          attemptNumber: true,
           status: true,
           method: true,
           provider: true,
@@ -422,6 +423,7 @@ export const getMyBookingById = async ({ id, customerId }) => {
           paidAt: true,
           amount: true,
         },
+        orderBy: { attemptNumber: "desc" },
       },
     },
   });

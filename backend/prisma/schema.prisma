@@ -310,7 +310,7 @@ model Booking {
   passengers   BookingPassenger[]
   bookingSeat  BookingSeat[]
   holds        BookingHold[]
-  payment      Payment?
+    payments     Payment[]
   ticket       Ticket?
   cancellation Cancellation?
 
@@ -371,7 +371,8 @@ model BookingHold {
 
 model Payment {
   id                String        @id @default(uuid())
-  bookingId         String        @unique
+  bookingId         String
+  attemptNumber     Int           @default(1)
   amount            Decimal       @db.Decimal(12, 2)
   method            PaymentMethod
   provider          String
@@ -384,8 +385,9 @@ model Payment {
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
 
   @@index([status])
+  @@index([bookingId, status])
+  @@index([bookingId, attemptNumber])
 }
-
 model Ticket {
   id           String       @id @default(uuid())
   bookingId    String       @unique

@@ -122,8 +122,10 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
           departureTime: true,
         },
       },
-      payment: {
+      payments: {
         select: { id: true, status: true, provider: true, providerReference: true },
+        orderBy: { attemptNumber: "desc" },
+        take: 1,
       },
       ticket: { select: { id: true, status: true } },
       bookingSeat: { select: { tripSeatId: true } },
@@ -134,7 +136,8 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
   if (booking.cancellation) {
     throw createError("A cancellation already exists for this booking.", 409);
   }
-  if (!booking.payment || booking.payment.status !== "SUCCESS") {
+      const successfulPayment = booking.payments.find((p) => p.status === "SUCCESS");
+    if (!successfulPayment) {
     throw createError(
       "Booking has no successful payment to refund.",
       409,
@@ -157,8 +160,8 @@ export const cancelBooking = async ({ bookingId, customerId, reason }) => {
   let refundResult;
   if (refundAmount > 0) {
     try {
-      refundResult = await refundPayment({
-        paymentId: booking.payment.id,
+           refundResult = await refundPayment({
+        paymentId: successfulPayment.id,
         reason: reason || `Customer cancellation (${tier}, ${pct}%)`,
         triggeredBy: "customer_cancel",
       });
