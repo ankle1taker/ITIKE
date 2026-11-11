@@ -7,8 +7,11 @@ export default defineConfig({
     environment: "node",
     testTimeout: 20000,
     hookTimeout: 30000,
-    // Run test files sequentially to avoid DB conflicts
     fileParallelism: false,
     pool: "forks",
+    env: {
+      RATE_LIMIT_DISABLED: "true",
+      NODE_ENV: "test",
+    },
   },
 });
