@@ -1,16 +1,11 @@
-/**
- * Test fixtures: create test data (trips, customers) via the API.
- */
-
-import { api, randomPhone, randomRegistrationNumber, registerCustomer } from "./api.js";
+import { api, registerCustomer } from "./api.js";
 
 export const createCustomerAndBook = async ({
   adminToken,
   tripId,
   prefix = "test",
 }) => {
-  // Register customer
-  const phone = randomPhone();
+  const phone = "0790" + Math.floor(100000 + Math.random() * 900000).toString();
   const password = "TestPass!2026";
   const { user, token } = await registerCustomer({
     fullName: `${prefix} Customer`,
@@ -18,13 +13,11 @@ export const createCustomerAndBook = async ({
     password,
   });
 
-  // Find a seat on the trip
   const seats = await api(`/api/trips/${tripId}/seats`);
   if (!seats.ok) throw new Error(`Failed to get trip seats: ${seats.status}`);
   const available = seats.body.data.seats.filter((s) => s.isAvailable);
   if (available.length === 0) throw new Error(`No available seats on trip ${tripId}`);
 
-  // Create booking
   const bookRes = await api("/api/customer/bookings", {
     method: "POST",
     token,
@@ -49,28 +42,49 @@ export const createCustomerAndBook = async ({
   };
 };
 
-export const getAvailableTrip = async (adminToken, busId, routeId, daysAhead = 300) => {
-  const day = new Date();
-  day.setDate(day.getDate() + daysAhead);
-  const dayStr = day.toISOString().slice(0, 10);
+/**
+ * Find the next day on which the bus has NO overlapping trip.
+ * Tries startDaysAhead + 0..30 days until one succeeds.
+ * This makes tests idempotent across runs — no more "bus already has a trip" collisions.
+ */
+export const getAvailableTrip = async (adminToken, busId, routeId, startDaysAhead = 300) => {
+  let lastError = null;
 
-  const res = await api("/api/company/trips", {
-    method: "POST",
-    token: adminToken,
-    body: {
-      routeId,
-      busId,
-      departureTime: `${dayStr}T10:00:00Z`,
-      arrivalTime: `${dayStr}T13:00:00Z`,
-      basePrice: 3000,
-    },
-  });
+  for (let offset = 0; offset < 30; offset++) {
+    const daysAhead = startDaysAhead + offset;
+    const day = new Date();
+    day.setDate(day.getDate() + daysAhead);
+    const dayStr = day.toISOString().slice(0, 10);
 
-  if (!res.ok) {
+    const res = await api("/api/company/trips", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        routeId,
+        busId,
+        departureTime: `${dayStr}T10:00:00Z`,
+        arrivalTime: `${dayStr}T13:00:00Z`,
+        basePrice: 3000,
+      },
+    });
+
+    if (res.ok) {
+      return res.body.data.trip.id;
+    }
+
+    // 409 = overlap, try next day
+    if (res.status === 409) {
+      lastError = res.body;
+      continue;
+    }
+
+    // Any other error = real failure, don't retry
     throw new Error(`Trip creation failed: ${res.status} ${JSON.stringify(res.body)}`);
   }
 
-  return res.body.data.trip.id;
+  throw new Error(
+    `Could not find a free day for a trip on bus ${busId} within 30 days of +${startDaysAhead}. Last error: ${JSON.stringify(lastError)}`,
+  );
 };
 
 export const mockWebhook = async (providerReference, status, amount) => {
