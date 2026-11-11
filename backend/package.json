@@ -1,3 +1,4 @@
+
 {
   "name": "itike-backend",
   "type": "module",
@@ -15,9 +16,17 @@
     "prisma:studio": "prisma studio",
     "admin:create": "node scripts/create-platform-admin.js",
     "company-admin:create": "node scripts/create-company-admin.js",
-    "debug:booking": "node scripts/debug-booking.js"
+    "debug:booking": "node scripts/debug-booking.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui"
   },
-  "keywords": ["itike", "bus", "reservation", "ticketing"],
+  "keywords": [
+    "itike",
+    "bus",
+    "reservation",
+    "ticketing"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -31,6 +40,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.5.0",
-    "prisma": "^7.10.0"
+    "prisma": "^7.10.0",
+    "supertest": "^7.3.2",
+    "vitest": "^5.1.0"
   }
 }
