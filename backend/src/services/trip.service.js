@@ -134,8 +134,20 @@ export const createTrip = async ({
   if (!(dep > new Date())) {
     throw createError("Departure time must be in the future.", 400);
   }
-
   return prisma.$transaction(async (tx) => {
+    // Lock the bus row first — prevents concurrent trip creations on the same bus
+    const lockedBus = await tx.$queryRaw`
+      SELECT "id"
+      FROM "Bus"
+      WHERE "id"::text = ${busId}::text
+        AND "companyId"::text = ${companyId}::text
+      FOR UPDATE
+    `;
+
+    if (lockedBus.length === 0) {
+      throw createError("Bus not found.", 404);
+    }
+
     const route = await getRouteOrThrow(tx, routeId);
 
     if (!route.isActive) {
@@ -151,7 +163,6 @@ export const createTrip = async ({
       );
     }
 
-    // Require the bus to have active seats BEFORE creating the trip.
     const activeSeatCount = await tx.seat.count({
       where: { busId, status: "ACTIVE" },
     });

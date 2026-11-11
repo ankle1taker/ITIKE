@@ -30,55 +30,66 @@ export const registerCompanyApplication = async ({
 
   const normalizedReg = normalizeRegNumber(registrationNumber);
 
-  return prisma.$transaction(async (tx) => {
-    const existing = await tx.company.findUnique({
-      where: { registrationNumber: normalizedReg },
+  try {
+    return await prisma.$transaction(async (tx) => {
+      // Pre-check for nicer error messages (not atomic, but P2002 will catch races)
+      if (email) {
+        const existingEmail = await tx.company.findUnique({ where: { email } });
+        if (existingEmail) {
+          throw createError("A company with this email already exists.", 409);
+        }
+      }
+
+      const company = await tx.company.create({
+        data: {
+          name: name.trim(),
+          registrationNumber: normalizedReg,
+          phone: phone.trim(),
+          email: email?.trim() || null,
+          address: address?.trim() || null,
+          status: "INACTIVE",
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          companyId: company.id,
+          actorId: null,
+          action: "COMPANY_REGISTRATION_REQUESTED",
+          entityType: "Company",
+          entityId: company.id,
+          metadata: {
+            name: company.name,
+            registrationNumber: company.registrationNumber,
+            phone: company.phone,
+          },
+        },
+      });
+
+      return {
+        id: company.id,
+        name: company.name,
+        status: company.status,
+      };
     });
+  } catch (error) {
+    // Handle the race condition: rely on unique constraint (P2002)
+    if (error?.code === "P2002") {
+      const target = Array.isArray(error.meta?.target)
+        ? error.meta.target.join(", ")
+        : String(error.meta?.target || "");
 
-    if (existing) {
-      throw createError(
-        "A company with this registration number has already applied.",
-        409,
-      );
-    }
-
-    if (email) {
-      const existingEmail = await tx.company.findUnique({ where: { email } });
-      if (existingEmail) {
+      if (target.includes("registrationNumber")) {
+        throw createError(
+          "A company with this registration number has already applied.",
+          409,
+        );
+      }
+      if (target.includes("email")) {
         throw createError("A company with this email already exists.", 409);
       }
+      throw createError("A company with a duplicate unique value already exists.", 409);
     }
-
-    const company = await tx.company.create({
-      data: {
-        name: name.trim(),
-        registrationNumber: normalizedReg,
-        phone: phone.trim(),
-        email: email?.trim() || null,
-        address: address?.trim() || null,
-        status: "INACTIVE",
-      },
-    });
-
-    await tx.auditLog.create({
-      data: {
-        companyId: company.id,
-        actorId: null,
-        action: "COMPANY_REGISTRATION_REQUESTED",
-        entityType: "Company",
-        entityId: company.id,
-        metadata: {
-          name: company.name,
-          registrationNumber: company.registrationNumber,
-          phone: company.phone,
-        },
-      },
-    });
-
-    return {
-      id: company.id,
-      name: company.name,
-      status: company.status,
-    };
-  });
+    throw error;
+  }
 };

@@ -5,15 +5,14 @@ import {
 } from "../controllers/tripSearch.controller.js";
 import { list as listTripSeats } from "../controllers/tripSeatPublic.controller.js";
 import { register as registerCompany } from "../controllers/companyRegistration.controller.js";
+import { companyRegisterLimiter } from "../middleware/rateLimiter.middleware.js";
 
 const router = Router();
 
-// ---------- Public trip search ----------
 router.get("/trips/search", searchTrips);
 router.get("/trips/:id/seats", listTripSeats);
 router.get("/trips/:id", getPublicTrip);
 
-// ---------- Public company registration ----------
-router.post("/companies/register", registerCompany);
+router.post("/companies/register", companyRegisterLimiter, registerCompany);
 
 export default router;
