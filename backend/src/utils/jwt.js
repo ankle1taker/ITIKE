@@ -13,6 +13,7 @@ export const generateAccessToken = (user) => {
       sub: user.id,
       role: user.role,
       companyId: user.companyId,
+      branchId: user.branchId ?? null,
     },
     JWT_SECRET,
     {

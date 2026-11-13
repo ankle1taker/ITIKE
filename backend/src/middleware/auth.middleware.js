@@ -26,6 +26,7 @@ export const authenticate = (req, res, next) => {
       id: payload.sub,
       role: payload.role,
       companyId: payload.companyId ?? null,
+      branchId: payload.branchId ?? null,
     };
 
     next();

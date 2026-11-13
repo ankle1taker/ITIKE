@@ -1,5 +1,4 @@
 import prisma from "../config/database.js";
-import { reconcileTripSeatsInTx } from "./tripSeat.service.js";
 
 const createError = (message, statusCode) => {
   const error = new Error(message);
@@ -13,74 +12,80 @@ const validateId = (id, fieldName = "ID") => {
   }
 };
 
-const validateCompanyId = (companyId) => {
-  if (!companyId || typeof companyId !== "string") {
-    throw createError("Company ID is required.", 400);
+const validateTimes = (departureTime, arrivalTime) => {
+  const dep = new Date(departureTime);
+  const arr = new Date(arrivalTime);
+
+  if (Number.isNaN(dep.getTime())) {
+    throw createError("Invalid departure time.", 400);
   }
+  if (Number.isNaN(arr.getTime())) {
+    throw createError("Invalid arrival time.", 400);
+  }
+  if (arr <= dep) {
+    throw createError("Arrival time must be after departure time.", 400);
+  }
+  return { dep, arr };
 };
 
-const validateActorId = (actorId) => {
-  if (!actorId || typeof actorId !== "string") {
-    throw createError("User not authenticated.", 401);
+const validatePrice = (basePrice) => {
+  const num = Number(basePrice);
+  if (Number.isNaN(num) || num < 0) {
+    throw createError("Base price must be a non-negative number.", 400);
   }
-};
-
-const getBusOrThrow = async (tx, busId, companyId) => {
-  const bus = await tx.bus.findFirst({
-    where: { id: busId, companyId },
-    select: { id: true, status: true, capacity: true },
-  });
-
-  if (!bus) {
-    throw createError("Bus not found.", 404);
-  }
-
-  return bus;
+  return num;
 };
 
 const getRouteOrThrow = async (tx, routeId) => {
   const route = await tx.route.findUnique({
     where: { id: routeId },
-    select: {
-      id: true,
-      isActive: true,
-      origin: true,
-      destination: true,
-      _count: { select: { stops: true } },
-    },
+    select: { id: true, origin: true, destination: true, isActive: true },
   });
-
   if (!route) {
     throw createError("Route not found.", 404);
   }
-
   return route;
 };
 
-const assertNoBusOverlap = async (
-  tx,
-  busId,
-  departureTime,
-  arrivalTime,
-  excludeTripId = null,
-) => {
+const getBusOrThrow = async (tx, busId, companyId) => {
+  const bus = await tx.bus.findFirst({
+    where: { id: busId, companyId },
+    select: { id: true, status: true, capacity: true, branchId: true },
+  });
+  if (!bus) {
+    throw createError("Bus not found.", 404);
+  }
+  return bus;
+};
+
+const assertNoBusOverlap = async (tx, busId, dep, arr, excludeTripId = null) => {
   const where = {
     busId,
-    status: { in: ["SCHEDULED", "BOARDING", "DEPARTED", "DELAYED"] },
-    arrivalTime: { gt: departureTime },
-    departureTime: { lt: arrivalTime },
+    status: { notIn: ["CANCELLED", "ARRIVED"] },
+    AND: [
+      { departureTime: { lt: arr } },
+      {
+        OR: [
+          { arrivalTime: { gt: dep } },
+          {
+            AND: [
+              { arrivalTime: null },
+              { departureTime: { gte: dep } },
+            ],
+          },
+        ],
+      },
+    ],
   };
-
   if (excludeTripId) {
     where.NOT = { id: excludeTripId };
   }
 
-  const overlapping = await tx.trip.findFirst({
+  const conflict = await tx.trip.findFirst({
     where,
     select: { id: true, departureTime: true, arrivalTime: true },
   });
-
-  if (overlapping) {
+  if (conflict) {
     throw createError(
       "This bus already has a trip scheduled during that time window.",
       409,
@@ -88,30 +93,25 @@ const assertNoBusOverlap = async (
   }
 };
 
-const ALLOWED_TRANSITIONS = {
-  SCHEDULED: ["BOARDING", "CANCELLED", "DELAYED"],
-  DELAYED: ["SCHEDULED", "BOARDING", "CANCELLED"],
-  BOARDING: ["DEPARTED", "DELAYED", "CANCELLED"],
-  DEPARTED: ["ARRIVED", "CANCELLED"],
-  ARRIVED: [],
-  CANCELLED: [],
-};
-
-const assertTransitionAllowed = (from, to) => {
-  if (from === to) {
-    throw createError(`Trip is already ${to}.`, 409);
+const initializeTripSeats = async (tx, tripId, busId) => {
+  const seats = await tx.seat.findMany({
+    where: { busId, status: "ACTIVE" },
+    select: { id: true },
+  });
+  if (seats.length === 0) {
+    throw createError(
+      "Bus has no active seats configured. Configure seats before scheduling trips.",
+      409,
+    );
   }
-  const allowed = ALLOWED_TRANSITIONS[from] ?? [];
-  if (!allowed.includes(to)) {
-    throw createError(`Cannot transition trip from ${from} to ${to}.`, 409);
-  }
+  const data = seats.map((s) => ({
+    tripId,
+    seatId: s.id,
+    status: "AVAILABLE",
+  }));
+  await tx.tripSeat.createMany({ data });
+  return seats.length;
 };
-
-const FROZEN_UPDATE_FIELDS_AFTER_BOARDING = [
-  "routeId",
-  "arrivalTime",
-  "basePrice",
-];
 
 export const createTrip = async ({
   companyId,
@@ -121,19 +121,13 @@ export const createTrip = async ({
   departureTime,
   arrivalTime,
   basePrice,
+  branchId = null,
 }) => {
-  validateCompanyId(companyId);
-  validateActorId(actorId);
+  validateId(routeId, "Route ID");
+  validateId(busId, "Bus ID");
+  const { dep, arr } = validateTimes(departureTime, arrivalTime);
+  const price = validatePrice(basePrice);
 
-  const dep = new Date(departureTime);
-  const arr = new Date(arrivalTime);
-
-  if (!(dep < arr)) {
-    throw createError("Arrival time must be after departure time.", 400);
-  }
-  if (!(dep > new Date())) {
-    throw createError("Departure time must be in the future.", 400);
-  }
   return prisma.$transaction(async (tx) => {
     // Lock the bus row first — prevents concurrent trip creations on the same bus
     const lockedBus = await tx.$queryRaw`
@@ -143,19 +137,16 @@ export const createTrip = async ({
         AND "companyId"::text = ${companyId}::text
       FOR UPDATE
     `;
-
     if (lockedBus.length === 0) {
       throw createError("Bus not found.", 404);
     }
 
     const route = await getRouteOrThrow(tx, routeId);
-
     if (!route.isActive) {
       throw createError("Route is inactive.", 409);
     }
 
     const bus = await getBusOrThrow(tx, busId, companyId);
-
     if (bus.status !== "ACTIVE") {
       throw createError(
         `Bus is not available for trips (status: ${bus.status}).`,
@@ -163,10 +154,17 @@ export const createTrip = async ({
       );
     }
 
+    // If caller passed a branchId, it must match the bus's branch
+    if (branchId && branchId !== bus.branchId) {
+      throw createError(
+        "Bus does not belong to the requested branch.",
+        409,
+      );
+    }
+
     const activeSeatCount = await tx.seat.count({
       where: { busId, status: "ACTIVE" },
     });
-
     if (activeSeatCount === 0) {
       throw createError(
         "Bus has no active seats configured. Configure seats before scheduling trips.",
@@ -179,59 +177,56 @@ export const createTrip = async ({
     const trip = await tx.trip.create({
       data: {
         companyId,
+        branchId: bus.branchId,
         routeId,
         busId,
         departureTime: dep,
         arrivalTime: arr,
-        basePrice,
+        basePrice: price,
         status: "SCHEDULED",
-      },
-      include: {
-        route: {
-          select: { id: true, origin: true, destination: true },
-        },
-        bus: {
-          select: { id: true, registrationNumber: true, capacity: true },
-        },
       },
     });
 
-    // Populate TripSeat inventory from the bus's active seats.
-    const seatInit = await reconcileTripSeatsInTx(tx, {
-      tripId: trip.id,
-      busId: trip.busId,
-      companyId,
-    });
+    await initializeTripSeats(tx, trip.id, busId);
 
     await tx.auditLog.create({
       data: {
         companyId,
-        actorId,
+        actorId: actorId || null,
         action: "TRIP_CREATED",
         entityType: "Trip",
         entityId: trip.id,
         metadata: {
-          routeId: trip.routeId,
-          busId: trip.busId,
-          departureTime: trip.departureTime.toISOString(),
-          arrivalTime: trip.arrivalTime.toISOString(),
-          basePrice: trip.basePrice.toString(),
-          tripSeatsCreated: seatInit.added,
+          routeId,
+          busId,
+          branchId: bus.branchId,
+          departureTime: dep.toISOString(),
+          arrivalTime: arr.toISOString(),
+          basePrice: price,
         },
       },
     });
 
-    const warnings = [];
-    if (route._count.stops === 0) {
-      warnings.push("Route has no stops configured.");
-    }
-
-    return { trip, warnings };
+    return tx.trip.findUnique({
+      where: { id: trip.id },
+      include: {
+        route: { select: { id: true, origin: true, destination: true } },
+        bus: {
+          select: {
+            id: true,
+            registrationNumber: true,
+            capacity: true,
+            branchId: true,
+          },
+        },
+      },
+    });
   });
 };
 
 export const listTrips = async ({
   companyId,
+  branchId = null,
   page = 1,
   limit = 20,
   status,
@@ -241,17 +236,12 @@ export const listTrips = async ({
   to,
   search,
 }) => {
-  validateCompanyId(companyId);
-
-  if (!Number.isInteger(page) || page < 1) {
-    throw createError("Page must be a positive integer.", 400);
-  }
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-    throw createError("Limit must be between 1 and 100.", 400);
-  }
+  const safePage = Math.max(1, Number(page) || 1);
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
+  const skip = (safePage - 1) * safeLimit;
 
   const where = { companyId };
-
+  if (branchId) where.branchId = branchId;
   if (status) where.status = status;
   if (busId) where.busId = busId;
   if (routeId) where.routeId = routeId;
@@ -262,52 +252,64 @@ export const listTrips = async ({
     if (to) where.departureTime.lte = new Date(to);
   }
 
-  if (search?.trim()) {
-    const term = search.trim();
-    where.route = {
-      OR: [
-        { origin: { contains: term, mode: "insensitive" } },
-        { destination: { contains: term, mode: "insensitive" } },
-      ],
-    };
+  if (search && search.trim()) {
+    where.OR = [
+      { route: { origin: { contains: search.trim(), mode: "insensitive" } } },
+      {
+        route: {
+          destination: { contains: search.trim(), mode: "insensitive" },
+        },
+      },
+      {
+        bus: {
+          registrationNumber: {
+            contains: search.trim(),
+            mode: "insensitive",
+          },
+        },
+      },
+    ];
   }
-
-  const skip = (page - 1) * limit;
 
   const [trips, total] = await prisma.$transaction([
     prisma.trip.findMany({
       where,
       orderBy: [{ departureTime: "asc" }, { id: "asc" }],
       skip,
-      take: limit,
+      take: safeLimit,
       include: {
         route: { select: { id: true, origin: true, destination: true } },
-        bus: { select: { id: true, registrationNumber: true, capacity: true } },
-        _count: { select: { tripSeats: true, bookings: true } },
+        bus: {
+          select: {
+            id: true,
+            registrationNumber: true,
+            capacity: true,
+            branchId: true,
+          },
+        },
+        _count: { select: { bookings: true } },
       },
     }),
     prisma.trip.count({ where }),
   ]);
 
-  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+  const totalPages = total === 0 ? 0 : Math.ceil(total / safeLimit);
 
   return {
     trips,
     pagination: {
-      page,
-      limit,
+      page: safePage,
+      limit: safeLimit,
       total,
       totalPages,
-      hasNext: page < totalPages,
-      hasPrev: page > 1 && totalPages > 0,
+      hasNext: safePage < totalPages,
+      hasPrev: safePage > 1 && totalPages > 0,
     },
   };
 };
 
 export const getTripById = async ({ id, companyId }) => {
   validateId(id, "Trip ID");
-  validateCompanyId(companyId);
-
   const trip = await prisma.trip.findFirst({
     where: { id, companyId },
     include: {
@@ -316,7 +318,10 @@ export const getTripById = async ({ id, companyId }) => {
           id: true,
           origin: true,
           destination: true,
-          stops: { orderBy: { sequence: "asc" } },
+          stops: {
+            select: { id: true, name: true, sequence: true },
+            orderBy: { sequence: "asc" },
+          },
         },
       },
       bus: {
@@ -324,17 +329,15 @@ export const getTripById = async ({ id, companyId }) => {
           id: true,
           registrationNumber: true,
           capacity: true,
-          status: true,
+          branchId: true,
         },
       },
-      _count: { select: { tripSeats: true, bookings: true } },
+      _count: { select: { bookings: true, tripSeats: true } },
     },
   });
-
   if (!trip) {
     throw createError("Trip not found.", 404);
   }
-
   return trip;
 };
 
@@ -347,94 +350,98 @@ export const updateTrip = async ({
   basePrice,
 }) => {
   validateId(id, "Trip ID");
-  validateCompanyId(companyId);
-  validateActorId(actorId);
-
-  const data = {};
-  if (routeId !== undefined) data.routeId = routeId;
-  if (arrivalTime !== undefined) data.arrivalTime = new Date(arrivalTime);
-  if (basePrice !== undefined) data.basePrice = basePrice;
-
-  if (Object.keys(data).length === 0) {
-    throw createError("At least one trip field must be provided.", 400);
-  }
 
   return prisma.$transaction(async (tx) => {
-    const existing = await tx.trip.findFirst({
+    const trip = await tx.trip.findFirst({
       where: { id, companyId },
+      select: {
+        id: true,
+        status: true,
+        routeId: true,
+        busId: true,
+        departureTime: true,
+        arrivalTime: true,
+        basePrice: true,
+      },
     });
-
-    if (!existing) {
+    if (!trip) {
       throw createError("Trip not found.", 404);
     }
 
-    const isFrozen =
-      existing.status === "BOARDING" ||
-      existing.status === "DEPARTED" ||
-      existing.status === "ARRIVED" ||
-      existing.status === "CANCELLED";
-
-    if (isFrozen) {
-      const touchedFrozen = FROZEN_UPDATE_FIELDS_AFTER_BOARDING.some(
-        (f) => data[f] !== undefined,
+    if (trip.status === "BOARDING" || trip.status === "DEPARTED" || trip.status === "ARRIVED") {
+      throw createError(
+        "Route, arrival time, and price cannot be changed once a trip is boarding or later.",
+        409,
       );
-      if (touchedFrozen) {
-        throw createError(
-          "Cannot modify route, arrival time, or price once boarding has started.",
-          409,
-        );
-      }
     }
 
-    if (data.routeId !== undefined && data.routeId !== existing.routeId) {
-      const route = await getRouteOrThrow(tx, data.routeId);
+    const data = {};
+    const changedFields = [];
+
+    if (routeId !== undefined && routeId !== trip.routeId) {
+      const route = await getRouteOrThrow(tx, routeId);
       if (!route.isActive) {
         throw createError("Route is inactive.", 409);
       }
+      data.routeId = routeId;
+      changedFields.push("routeId");
     }
 
-    if (data.arrivalTime !== undefined) {
-      if (!(existing.departureTime < data.arrivalTime)) {
-        throw createError(
-          "Arrival time must be after departure time.",
-          400,
-        );
+    if (arrivalTime !== undefined) {
+      const arr = new Date(arrivalTime);
+      if (Number.isNaN(arr.getTime())) {
+        throw createError("Invalid arrival time.", 400);
+      }
+      if (arr <= new Date(trip.departureTime)) {
+        throw createError("Arrival time must be after departure time.", 400);
       }
       await assertNoBusOverlap(
         tx,
-        existing.busId,
-        existing.departureTime,
-        data.arrivalTime,
-        id,
+        trip.busId,
+        new Date(trip.departureTime),
+        arr,
+        trip.id,
       );
+      data.arrivalTime = arr;
+      changedFields.push("arrivalTime");
     }
 
-    if (data.basePrice !== undefined && data.basePrice <= 0) {
-      throw createError("Price must be greater than 0.", 400);
+    if (basePrice !== undefined) {
+      data.basePrice = validatePrice(basePrice);
+      changedFields.push("basePrice");
     }
 
-    const trip = await tx.trip.update({
-      where: { id },
+    if (changedFields.length === 0) {
+      throw createError("No updatable fields provided.", 400);
+    }
+
+    const updated = await tx.trip.update({
+      where: { id: trip.id },
       data,
-      include: {
-        route: { select: { id: true, origin: true, destination: true } },
-        bus: { select: { id: true, registrationNumber: true, capacity: true } },
-      },
     });
 
     await tx.auditLog.create({
       data: {
         companyId,
-        actorId,
+        actorId: actorId || null,
         action: "TRIP_UPDATED",
         entityType: "Trip",
         entityId: trip.id,
-        metadata: { changedFields: Object.keys(data) },
+        metadata: { changedFields, updated: data },
       },
     });
 
-    return trip;
+    return updated;
   });
+};
+
+const VALID_TRANSITIONS = {
+  SCHEDULED: ["BOARDING", "DEPARTED", "CANCELLED", "DELAYED"],
+  DELAYED: ["SCHEDULED", "BOARDING", "CANCELLED"],
+  BOARDING: ["DEPARTED", "DELAYED", "CANCELLED"],
+  DEPARTED: ["ARRIVED", "CANCELLED"],
+  ARRIVED: [],
+  CANCELLED: [],
 };
 
 export const updateTripStatus = async ({
@@ -444,40 +451,40 @@ export const updateTripStatus = async ({
   status,
 }) => {
   validateId(id, "Trip ID");
-  validateCompanyId(companyId);
-  validateActorId(actorId);
 
   return prisma.$transaction(async (tx) => {
-    const existing = await tx.trip.findFirst({
+    const trip = await tx.trip.findFirst({
       where: { id, companyId },
       select: { id: true, status: true },
     });
-
-    if (!existing) {
+    if (!trip) {
       throw createError("Trip not found.", 404);
     }
 
-    assertTransitionAllowed(existing.status, status);
+    const allowed = VALID_TRANSITIONS[trip.status] || [];
+    if (!allowed.includes(status)) {
+      throw createError(
+        `Cannot transition trip from ${trip.status} to ${status}.`,
+        409,
+      );
+    }
 
-    const trip = await tx.trip.update({
-      where: { id },
+    const updated = await tx.trip.update({
+      where: { id: trip.id },
       data: { status },
     });
 
     await tx.auditLog.create({
       data: {
         companyId,
-        actorId,
+        actorId: actorId || null,
         action: "TRIP_STATUS_CHANGED",
         entityType: "Trip",
         entityId: trip.id,
-        metadata: {
-          previousStatus: existing.status,
-          newStatus: status,
-        },
+        metadata: { previousStatus: trip.status, newStatus: status },
       },
     });
 
-    return trip;
+    return updated;
   });
 };

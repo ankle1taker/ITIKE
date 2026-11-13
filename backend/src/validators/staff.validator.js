@@ -24,6 +24,7 @@ const passwordSchema = z
   .max(128, "Password must not exceed 128 characters.");
 
 export const createStaffSchema = z.object({
+  branchId: z.string().uuid("Invalid branch ID.").optional(),
   fullName: fullNameSchema,
   phone: phoneSchema,
   email: emailSchema.optional(),

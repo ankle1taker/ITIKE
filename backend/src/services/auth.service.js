@@ -57,7 +57,8 @@ export const registerCustomer = async ({
       phone: user.phone,
       email: user.email,
       role: user.role,
-      companyId: user.companyId,
+      companyId: user.companyId ?? null,
+      branchId: user.branchId ?? null,
     },
     accessToken,
   };
@@ -97,6 +98,7 @@ export const loginUser = async ({ phone, password }) => {
       email: user.email,
       role: user.role,
       companyId: user.companyId,
+      branchId: user.branchId ?? null,
     },
     accessToken,
   };
@@ -114,6 +116,7 @@ export const getAuthenticatedUser = async (userId) => {
       email: true,
       role: true,
       companyId: true,
+      branchId: true,
       isActive: true,
       createdAt: true,
       updatedAt: true,

@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { api, loginAsCompanyAdmin } from "../helpers/api.js";
-import { createCustomerAndBook, getAvailableTrip, mockWebhook } from "../helpers/fixtures.js";
+import {
+  createCustomerAndBook,
+  getAvailableTrip,
+  getSeedBusId,
+  mockWebhook,
+} from "../helpers/fixtures.js";
 
 describe("Refund state machine", () => {
   let adminToken;
@@ -9,17 +14,14 @@ describe("Refund state machine", () => {
 
   beforeAll(async () => {
     adminToken = await loginAsCompanyAdmin();
-    const buses = await api("/api/company/buses", { token: adminToken });
-    const activeBus = buses.body.data.buses.find((b) => b.status === "ACTIVE");
-    activeBusId = activeBus.id;
+    activeBusId = await getSeedBusId(adminToken);
     const trips = await api("/api/company/trips", { token: adminToken });
     routeId = trips.body.data.trips[0]?.route.id;
+    if (!routeId) throw new Error("No existing route — create one first");
   });
 
   it("cancellation transitions booking, cancellation, payment correctly", async () => {
-    // Fresh trip per test — no cascade
     const tripId = await getAvailableTrip(adminToken, activeBusId, routeId, 331);
-
     const { bookingId, customerToken, customerPhone } = await createCustomerAndBook({
       adminToken,
       tripId,
@@ -32,7 +34,6 @@ describe("Refund state machine", () => {
       body: { provider: "mock", phoneNumber: customerPhone },
     });
     expect(pay.status).toBe(201);
-
     await mockWebhook(pay.body.data.providerReference, "SUCCESS", 3000);
     await new Promise((r) => setTimeout(r, 500));
 
@@ -52,9 +53,7 @@ describe("Refund state machine", () => {
   });
 
   it("blocks double cancellation", async () => {
-    // Fresh trip per test
     const tripId = await getAvailableTrip(adminToken, activeBusId, routeId, 332);
-
     const { bookingId, customerToken, customerPhone } = await createCustomerAndBook({
       adminToken,
       tripId,

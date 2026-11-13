@@ -93,6 +93,7 @@ const getActiveCompanyLayout = async (tx, layoutId, companyId) => {
 
 export const createBus = async ({
   companyId,
+  branchId,
   layoutId,
   registrationNumber,
   manufacturer,
@@ -105,6 +106,9 @@ export const createBus = async ({
   validateActorId(actorId);
   validateLayoutId(layoutId);
 
+  if (!branchId || typeof branchId !== "string") {
+    throw createError("Branch ID is required.", 400);
+  }
   if (typeof registrationNumber !== "string" || !registrationNumber.trim()) {
     throw createError("Registration number is required.", 400);
   }
@@ -119,11 +123,20 @@ export const createBus = async ({
 
   try {
     return await prisma.$transaction(async (tx) => {
+      const branch = await tx.branch.findFirst({
+        where: { id: branchId, companyId, isActive: true },
+        select: { id: true },
+      });
+      if (!branch) {
+        throw createError("Branch not found or inactive.", 404);
+      }
+
       const layout = await getActiveCompanyLayout(tx, layoutId, companyId);
 
       const bus = await tx.bus.create({
         data: {
           companyId,
+          branchId,
           layoutId: layout?.id ?? null,
           registrationNumber: normalizedRegistrationNumber,
           manufacturer: manufacturer?.trim() || null,
@@ -145,6 +158,7 @@ export const createBus = async ({
             busType: bus.busType,
             capacity: bus.capacity,
             layoutId: bus.layoutId,
+            branchId: bus.branchId,
           },
         },
       });
@@ -161,6 +175,7 @@ export const createBus = async ({
 
 export const listBuses = async ({
   companyId,
+  branchId = null,
   page = 1,
   limit = 20,
   search,
@@ -178,6 +193,7 @@ export const listBuses = async ({
 
   const skip = (page - 1) * limit;
   const where = { companyId };
+  if (branchId) where.branchId = branchId;
   if (status) where.status = status;
 
   if (search?.trim()) {

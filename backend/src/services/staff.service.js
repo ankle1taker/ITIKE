@@ -35,6 +35,7 @@ const publicUser = (user) => ({
   email: user.email,
   role: user.role,
   companyId: user.companyId,
+  branchId: user.branchId ?? null,
   isActive: user.isActive,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
@@ -74,6 +75,7 @@ const handleUniqueConstraintError = (error) => {
 
 export const createStaff = async ({
   companyId,
+  branchId,
   actorId,
   fullName,
   phone,
@@ -83,10 +85,27 @@ export const createStaff = async ({
   validateCompanyId(companyId);
   validateActorId(actorId);
 
+  // If branchId is provided, it must belong to this company and be active
+  if (branchId) {
+    if (typeof branchId !== "string") {
+      throw createError("Invalid branch ID.", 400);
+    }
+  }
+
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
   try {
     return await prisma.$transaction(async (tx) => {
+      if (branchId) {
+        const branch = await tx.branch.findFirst({
+          where: { id: branchId, companyId, isActive: true },
+          select: { id: true },
+        });
+        if (!branch) {
+          throw createError("Branch not found or inactive.", 404);
+        }
+      }
+
       const existingPhone = await tx.user.findUnique({
         where: { phone },
         select: { id: true },
@@ -108,6 +127,7 @@ export const createStaff = async ({
       const staff = await tx.user.create({
         data: {
           companyId,
+          branchId: branchId ?? null,
           fullName,
           phone,
           email: email ?? null,
@@ -127,6 +147,7 @@ export const createStaff = async ({
           metadata: {
             role: staff.role,
             phone: staff.phone,
+            branchId: staff.branchId,
           },
         },
       });
@@ -140,6 +161,7 @@ export const createStaff = async ({
 
 export const listStaff = async ({
   companyId,
+  branchId = null,
   page = 1,
   limit = 20,
   search,
@@ -159,6 +181,8 @@ export const listStaff = async ({
     companyId,
     role: STAFF_ROLE,
   };
+
+  if (branchId) where.branchId = branchId;
 
   if (typeof isActive === "boolean") {
     where.isActive = isActive;
@@ -188,6 +212,7 @@ export const listStaff = async ({
         email: true,
         role: true,
         companyId: true,
+        branchId: true,
         isActive: true,
         createdAt: true,
         updatedAt: true,
@@ -228,6 +253,7 @@ export const getStaffById = async ({ id, companyId }) => {
       email: true,
       role: true,
       companyId: true,
+      branchId: true,
       isActive: true,
       createdAt: true,
       updatedAt: true,

@@ -1,4 +1,3 @@
-
 import { z } from "zod";
 import {
   createBus,
@@ -15,6 +14,8 @@ const layoutIdSchema = z
   .optional();
 
 const createBusSchema = z.object({
+  branchId: z.string().uuid("Invalid branch ID."),
+
   layoutId: layoutIdSchema,
 
   registrationNumber: z
@@ -135,6 +136,15 @@ export const create = async (req, res, next) => {
     const companyId = getCompanyId(req);
     const actorId = getActorId(req);
 
+    // Company operators can only create buses in their own branch.
+    // Company admins can create in any branch of their company.
+    if (req.branchId && data.branchId !== req.branchId) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only create buses in your own branch.",
+      });
+    }
+
     const bus = await createBus({
       ...data,
       companyId,
@@ -159,6 +169,7 @@ export const list = async (req, res, next) => {
     const result = await listBuses({
       ...query,
       companyId,
+      branchId: req.branchId, // null for COMPANY_ADMIN, set for COMPANY_OPERATOR
     });
 
     res.status(200).json({

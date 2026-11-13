@@ -1,21 +1,23 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { api, loginAsCompanyAdmin, randomPhone, registerCustomer } from "../helpers/api.js";
-import { getAvailableTrip } from "../helpers/fixtures.js";
+import { getAvailableTrip, getSeedBusId } from "../helpers/fixtures.js";
 
 describe("Booking concurrency", () => {
   let adminToken;
-  let tripId;
+  let activeBusId;
+  let routeId;
 
   beforeAll(async () => {
     adminToken = await loginAsCompanyAdmin();
-    const buses = await api("/api/company/buses", { token: adminToken });
-    const activeBus = buses.body.data.buses.find((b) => b.status === "ACTIVE");
+    activeBusId = await getSeedBusId(adminToken);
     const trips = await api("/api/company/trips", { token: adminToken });
-    const routeId = trips.body.data.trips[0]?.route.id;
-    tripId = await getAvailableTrip(adminToken, activeBus.id, routeId, 320);
+    routeId = trips.body.data.trips[0]?.route.id;
+    if (!routeId) throw new Error("No existing route — create one first");
   });
 
   it("only one booking succeeds for the same seat under concurrency", async () => {
+    const tripId = await getAvailableTrip(adminToken, activeBusId, routeId, 320);
+
     const c1 = await registerCustomer({
       fullName: "Race A",
       phone: randomPhone("0791"),
@@ -55,7 +57,6 @@ describe("Booking concurrency", () => {
 
     const successes = [r1, r2].filter((r) => r.status === 201).length;
     const conflicts = [r1, r2].filter((r) => r.status === 409).length;
-
     expect(successes).toBe(1);
     expect(conflicts).toBe(1);
   });

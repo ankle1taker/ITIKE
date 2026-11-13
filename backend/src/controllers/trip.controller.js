@@ -36,17 +36,17 @@ export const create = async (req, res, next) => {
     const companyId = getCompanyId(req);
     const actorId = getActorId(req);
 
-    const { trip, warnings } = await createTrip({
+    const trip = await createTrip({
       ...data,
       companyId,
       actorId,
+      branchId: req.branchId || null,
     });
 
     res.status(201).json({
       success: true,
       message: "Trip created successfully.",
       data: { trip },
-      ...(warnings.length > 0 ? { warnings } : {}),
     });
   } catch (error) {
     next(error);
@@ -58,7 +58,11 @@ export const list = async (req, res, next) => {
     const query = listTripsSchema.parse(req.query);
     const companyId = getCompanyId(req);
 
-    const result = await listTrips({ ...query, companyId });
+    const result = await listTrips({
+      ...query,
+      companyId,
+      branchId: req.branchId || null,
+    });
 
     res.status(200).json({ success: true, data: result });
   } catch (error) {
