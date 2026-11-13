@@ -119,7 +119,9 @@ describe("Branch isolation", () => {
   });
 
   it("operator sees buses only from their branch", async () => {
-    const res = await api("/api/company/buses?limit=100", { token: operatorToken });
+    const res = await api("/api/company/buses?limit=100", {
+      token: operatorToken,
+    });
     expect(res.status).toBe(200);
     for (const bus of res.body.data.buses) {
       expect(bus.branchId).toBe(branchA);
@@ -127,7 +129,9 @@ describe("Branch isolation", () => {
   });
 
   it("company admin sees buses from all branches", async () => {
-    const res = await api("/api/company/buses?limit=100", { token: adminToken });
+    const res = await api("/api/company/buses?limit=100", {
+      token: adminToken,
+    });
     expect(res.status).toBe(200);
     const branchIds = res.body.data.buses.map((b) => b.branchId);
     expect(branchIds).toContain(branchA);
@@ -208,5 +212,71 @@ describe("Branch isolation", () => {
     expect(meRes.status).toBe(200);
     expect(meRes.body.data.user.branchId).toBe(branchA);
     expect(meRes.body.data.user.role).toBe("COMPANY_OPERATOR");
+  });
+
+  it("operator cannot read another branch's bus by UUID (404)", async () => {
+    const res = await api(`/api/company/buses/${busB}`, {
+      token: operatorToken,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("operator cannot read another branch's trip by UUID (404)", async () => {
+    const tripsRes = await api("/api/company/trips?limit=100", {
+      token: adminToken,
+    });
+    const branchBTrip = tripsRes.body.data.trips.find(
+      (t) => t.branchId === branchB,
+    );
+    let tripId = branchBTrip?.id;
+    if (!tripId) {
+      const routeRes = await api("/api/company/trips", { token: adminToken });
+      const routeId = routeRes.body.data.trips[0]?.route?.id;
+      if (!routeId) return;
+      const day = new Date();
+      day.setDate(day.getDate() + 500);
+      const dayStr = day.toISOString().slice(0, 10);
+      const createRes = await api("/api/company/trips", {
+        method: "POST",
+        token: adminToken,
+        body: {
+          routeId,
+          busId: busB,
+          departureTime: `${dayStr}T10:00:00Z`,
+          arrivalTime: `${dayStr}T13:00:00Z`,
+          basePrice: 3000,
+        },
+      });
+      if (createRes.status !== 201) return;
+      tripId = createRes.body.data.trip.id;
+    }
+    const res = await api(`/api/company/trips/${tripId}`, {
+      token: operatorToken,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("operator cannot read another branch's staff by UUID (403, admin-only)", async () => {
+    const opPhone = randomPhone("0799");
+    const staffRes = await api("/api/company/staff", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        branchId: branchB,
+        fullName: "Branch B Operator",
+        phone: opPhone,
+        password: "OpPass!2026",
+      },
+    });
+    expect(staffRes.status).toBe(201);
+    const staffBId = staffRes.body.data.staff.id;
+
+    // Staff management is admin-only (authorizeRoles gates it before
+    // branch filtering runs). An operator gets 403 - which is even stronger
+    // than 404, because it reveals nothing about whether the resource exists.
+    const res = await api(`/api/company/staff/${staffBId}`, {
+      token: operatorToken,
+    });
+    expect(res.status).toBe(403);
   });
 });

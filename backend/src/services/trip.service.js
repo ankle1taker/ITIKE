@@ -308,10 +308,13 @@ export const listTrips = async ({
   };
 };
 
-export const getTripById = async ({ id, companyId }) => {
+export const getTripById = async ({ id, companyId, branchId = null }) => {
   validateId(id, "Trip ID");
+  const where = { id, companyId };
+  if (branchId) where.branchId = branchId;
+
   const trip = await prisma.trip.findFirst({
-    where: { id, companyId },
+    where,
     include: {
       route: {
         select: {
@@ -344,6 +347,7 @@ export const getTripById = async ({ id, companyId }) => {
 export const updateTrip = async ({
   id,
   companyId,
+  branchId = null,
   actorId,
   routeId,
   arrivalTime,
@@ -352,8 +356,11 @@ export const updateTrip = async ({
   validateId(id, "Trip ID");
 
   return prisma.$transaction(async (tx) => {
+    const tripWhere = { id, companyId };
+    if (branchId) tripWhere.branchId = branchId;
+
     const trip = await tx.trip.findFirst({
-      where: { id, companyId },
+      where: tripWhere,
       select: {
         id: true,
         status: true,
@@ -443,20 +450,24 @@ const VALID_TRANSITIONS = {
   ARRIVED: [],
   CANCELLED: [],
 };
-
 export const updateTripStatus = async ({
   id,
   companyId,
+  branchId = null,
   actorId,
   status,
 }) => {
+
   validateId(id, "Trip ID");
 
-  return prisma.$transaction(async (tx) => {
+    const tripWhere = { id, companyId };
+    if (branchId) tripWhere.branchId = branchId;
+
     const trip = await tx.trip.findFirst({
-      where: { id, companyId },
+      where: tripWhere,
       select: { id: true, status: true },
-    });
+    });  return prisma.$transaction(async (tx) => {
+
     if (!trip) {
       throw createError("Trip not found.", 404);
     }

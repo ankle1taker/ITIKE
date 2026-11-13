@@ -55,7 +55,11 @@ export const list = async (req, res, next) => {
     const query = listStaffSchema.parse(req.query);
     const companyId = getCompanyId(req);
 
-    const result = await listStaff({ ...query, companyId });
+    const result = await listStaff({
+      ...query,
+      companyId,
+      branchId: req.branchId || null,
+    });
 
     res.status(200).json({ success: true, data: result });
   } catch (error) {
@@ -70,6 +74,7 @@ export const getById = async (req, res, next) => {
     const staff = await getStaffById({
       id: req.params.id,
       companyId,
+      branchId: req.branchId || null,
     });
 
     res.status(200).json({ success: true, data: { staff } });
@@ -88,6 +93,7 @@ export const update = async (req, res, next) => {
       ...data,
       id: req.params.id,
       companyId,
+      branchId: req.branchId || null,
       actorId,
     });
 
@@ -110,6 +116,7 @@ export const updateStatus = async (req, res, next) => {
     const staff = await updateStaffStatus({
       id: req.params.id,
       companyId,
+      branchId: req.branchId || null,
       actorId,
       isActive,
     });
@@ -133,6 +140,7 @@ export const resetPassword = async (req, res, next) => {
     const staff = await resetStaffPassword({
       id: req.params.id,
       companyId,
+      branchId: req.branchId || null,
       actorId,
       password,
     });

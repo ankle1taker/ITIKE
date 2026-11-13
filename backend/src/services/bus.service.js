@@ -234,12 +234,15 @@ export const listBuses = async ({
   };
 };
 
-export const getBusById = async ({ id, companyId }) => {
+export const getBusById = async ({ id, companyId, branchId = null }) => {
   validateId(id, "Bus ID");
   validateCompanyId(companyId);
 
+  const where = { id, companyId };
+  if (branchId) where.branchId = branchId;
+
   const bus = await prisma.bus.findFirst({
-    where: { id, companyId },
+    where,
     include: {
       layout: { select: { id: true, name: true, layoutType: true } },
       _count: { select: { seats: true, trips: true } },
@@ -252,10 +255,10 @@ export const getBusById = async ({ id, companyId }) => {
 
   return bus;
 };
-
 export const updateBus = async ({
   id,
   companyId,
+  branchId = null,
   actorId,
   layoutId,
   registrationNumber,
@@ -307,11 +310,13 @@ export const updateBus = async ({
     return await prisma.$transaction(async (tx) => {
       await lockBusRow(tx, id, companyId);
 
+        const busWhere = { id, companyId };
+      if (branchId) busWhere.branchId = branchId;
+
       const existingBus = await tx.bus.findFirst({
-        where: { id, companyId },
+        where: busWhere,
         select: { id: true, capacity: true, status: true },
       });
-
       if (!existingBus) {
         throw createError("Bus not found.", 404);
       }
@@ -376,8 +381,7 @@ export const updateBus = async ({
     );
   }
 };
-
-export const updateBusStatus = async ({ id, companyId, actorId, status }) => {
+export const updateBusStatus = async ({ id, companyId, branchId = null, actorId, status }) => {
   validateId(id, "Bus ID");
   validateCompanyId(companyId);
   validateActorId(actorId);
@@ -385,9 +389,11 @@ export const updateBusStatus = async ({ id, companyId, actorId, status }) => {
 
   return prisma.$transaction(async (tx) => {
     await lockBusRow(tx, id, companyId);
+    const busWhere = { id, companyId };
+    if (branchId) busWhere.branchId = branchId;
 
     const existingBus = await tx.bus.findFirst({
-      where: { id, companyId },
+      where: busWhere,
       select: { id: true, registrationNumber: true, status: true },
     });
 

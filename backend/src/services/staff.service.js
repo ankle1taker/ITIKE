@@ -41,14 +41,15 @@ const publicUser = (user) => ({
   updatedAt: user.updatedAt,
 });
 
-const findStaffOrThrow = async (tx, id, companyId) => {
-  const staff = await tx.user.findFirst({
-    where: {
-      id,
-      companyId,
-      role: STAFF_ROLE,
-    },
-  });
+const findStaffOrThrow = async (tx, id, companyId, branchId = null) => {
+  const where = {
+    id,
+    companyId,
+    role: STAFF_ROLE,
+  };
+  if (branchId) where.branchId = branchId;
+
+  const staff = await tx.user.findFirst({ where });
 
   if (!staff) {
     throw createError("Staff account not found.", 404);
@@ -236,16 +237,19 @@ export const listStaff = async ({
   };
 };
 
-export const getStaffById = async ({ id, companyId }) => {
+export const getStaffById = async ({ id, companyId, branchId = null }) => {
   validateId(id, "Staff ID");
   validateCompanyId(companyId);
 
+  const where = {
+    id,
+    companyId,
+    role: STAFF_ROLE,
+  };
+  if (branchId) where.branchId = branchId;
+
   const staff = await prisma.user.findFirst({
-    where: {
-      id,
-      companyId,
-      role: STAFF_ROLE,
-    },
+    where,
     select: {
       id: true,
       fullName: true,
@@ -270,6 +274,7 @@ export const getStaffById = async ({ id, companyId }) => {
 export const updateStaff = async ({
   id,
   companyId,
+  branchId = null,
   actorId,
   fullName,
   phone,
@@ -291,7 +296,7 @@ export const updateStaff = async ({
 
   try {
     return await prisma.$transaction(async (tx) => {
-      await findStaffOrThrow(tx, id, companyId);
+        await findStaffOrThrow(tx, id, companyId, branchId);
 
       if (data.phone !== undefined) {
         const dup = await tx.user.findFirst({
@@ -347,6 +352,7 @@ export const updateStaff = async ({
 export const updateStaffStatus = async ({
   id,
   companyId,
+  branchId = null,
   actorId,
   isActive,
 }) => {
@@ -359,7 +365,7 @@ export const updateStaffStatus = async ({
   }
 
   return prisma.$transaction(async (tx) => {
-    const existing = await findStaffOrThrow(tx, id, companyId);
+       const existing = await findStaffOrThrow(tx, id, companyId, branchId);
 
     if (existing.isActive === isActive) {
       throw createError(
@@ -394,6 +400,7 @@ export const updateStaffStatus = async ({
 export const resetStaffPassword = async ({
   id,
   companyId,
+  branchId = null,
   actorId,
   password,
 }) => {
@@ -411,7 +418,7 @@ export const resetStaffPassword = async ({
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
   return prisma.$transaction(async (tx) => {
-    await findStaffOrThrow(tx, id, companyId);
+      await findStaffOrThrow(tx, id, companyId, branchId);
 
     const staff = await tx.user.update({
       where: { id },

@@ -74,7 +74,11 @@ export const getById = async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
 
-    const trip = await getTripById({ id: req.params.id, companyId });
+    const trip = await getTripById({
+      id: req.params.id,
+      companyId,
+      branchId: req.branchId || null,
+    });
 
     res.status(200).json({ success: true, data: { trip } });
   } catch (error) {
@@ -92,6 +96,7 @@ export const update = async (req, res, next) => {
       ...data,
       id: req.params.id,
       companyId,
+      branchId: req.branchId || null,
       actorId,
     });
 
@@ -114,6 +119,7 @@ export const updateStatus = async (req, res, next) => {
     const trip = await updateTripStatus({
       id: req.params.id,
       companyId,
+      branchId: req.branchId || null,
       actorId,
       status,
     });

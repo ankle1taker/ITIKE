@@ -15,33 +15,27 @@ const layoutIdSchema = z
 
 const createBusSchema = z.object({
   branchId: z.string().uuid("Invalid branch ID."),
-
   layoutId: layoutIdSchema,
-
   registrationNumber: z
     .string()
     .trim()
     .min(2, "Registration number is required.")
     .max(50, "Registration number must not exceed 50 characters."),
-
   manufacturer: z
     .string()
     .trim()
     .max(100, "Manufacturer must not exceed 100 characters.")
     .optional(),
-
   model: z
     .string()
     .trim()
     .max(100, "Model must not exceed 100 characters.")
     .optional(),
-
   busType: z
     .string()
     .trim()
     .min(2, "Bus type is required.")
     .max(50, "Bus type must not exceed 50 characters."),
-
   capacity: z.coerce
     .number()
     .int("Bus capacity must be an integer.")
@@ -51,50 +45,40 @@ const createBusSchema = z.object({
 
 const listBusesSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-
   limit: z.coerce.number().int().min(1).max(100).default(20),
-
   search: z
     .string()
     .trim()
     .max(100, "Search must not exceed 100 characters.")
     .optional(),
-
-  status: z
-    .enum(["ACTIVE", "MAINTENANCE", "INACTIVE"])
-    .optional(),
+  status: z.enum(["ACTIVE", "MAINTENANCE", "INACTIVE"]).optional(),
 });
 
 const updateBusSchema = z
   .object({
     layoutId: layoutIdSchema,
-
     registrationNumber: z
       .string()
       .trim()
       .min(2, "Registration number is required.")
       .max(50, "Registration number must not exceed 50 characters.")
       .optional(),
-
     manufacturer: z
       .string()
       .trim()
       .max(100, "Manufacturer must not exceed 100 characters.")
       .optional(),
-
     model: z
       .string()
       .trim()
       .max(100, "Model must not exceed 100 characters.")
       .optional(),
-
     busType: z
       .string()
       .trim()
       .min(2, "Bus type is required.")
       .max(50, "Bus type must not exceed 50 characters.")
       .optional(),
-
     capacity: z.coerce
       .number()
       .int("Bus capacity must be an integer.")
@@ -116,7 +100,6 @@ const getCompanyId = (req) => {
     error.statusCode = 403;
     throw error;
   }
-
   return req.companyId;
 };
 
@@ -126,7 +109,6 @@ const getActorId = (req) => {
     error.statusCode = 401;
     throw error;
   }
-
   return req.user.id;
 };
 
@@ -136,8 +118,6 @@ export const create = async (req, res, next) => {
     const companyId = getCompanyId(req);
     const actorId = getActorId(req);
 
-    // Company operators can only create buses in their own branch.
-    // Company admins can create in any branch of their company.
     if (req.branchId && data.branchId !== req.branchId) {
       return res.status(403).json({
         success: false,
@@ -145,11 +125,7 @@ export const create = async (req, res, next) => {
       });
     }
 
-    const bus = await createBus({
-      ...data,
-      companyId,
-      actorId,
-    });
+    const bus = await createBus({ ...data, companyId, actorId });
 
     res.status(201).json({
       success: true,
@@ -169,13 +145,10 @@ export const list = async (req, res, next) => {
     const result = await listBuses({
       ...query,
       companyId,
-      branchId: req.branchId, // null for COMPANY_ADMIN, set for COMPANY_OPERATOR
+      branchId: req.branchId,
     });
 
-    res.status(200).json({
-      success: true,
-      data: result,
-    });
+    res.status(200).json({ success: true, data: result });
   } catch (error) {
     next(error);
   }
@@ -189,12 +162,10 @@ export const getById = async (req, res, next) => {
     const bus = await getBusById({
       id,
       companyId,
+      branchId: req.branchId,
     });
 
-    res.status(200).json({
-      success: true,
-      data: { bus },
-    });
+    res.status(200).json({ success: true, data: { bus } });
   } catch (error) {
     next(error);
   }
@@ -210,6 +181,7 @@ export const update = async (req, res, next) => {
     const bus = await updateBus({
       id,
       companyId,
+      branchId: req.branchId,
       actorId,
       ...data,
     });
@@ -234,6 +206,7 @@ export const updateStatus = async (req, res, next) => {
     const bus = await updateBusStatus({
       id,
       companyId,
+      branchId: req.branchId,
       actorId,
       status,
     });
