@@ -1,5 +1,8 @@
 import express from "express";
+import cors from "cors";
+
 import prisma from "./config/database.js";
+
 import authRoutes from "./routes/auth.routes.js";
 import platformRoutes from "./routes/platform.routes.js";
 import companyRoutes from "./routes/company.routes.js";
@@ -7,22 +10,69 @@ import customerRoutes from "./routes/customer.routes.js";
 import publicRoutes from "./routes/public.routes.js";
 import webhooksRoutes from "./routes/webhooks.routes.js";
 import ticketsRoutes from "./routes/tickets.routes.js";
+
 import { getProvider } from "./services/payments/index.js";
 import { startPaymentReconciler } from "./services/paymentReconciler.service.js";
 import { startNotificationDispatcher } from "./services/notificationDispatcher.service.js";
 import { getProvider as getNotificationProvider } from "./services/notifications/index.js";
+
 import { requestId } from "./middleware/requestId.middleware.js";
 import { httpLogger, logger } from "./middleware/logger.middleware.js";
 import { captureException } from "./config/sentry.js";
 
 const app = express();
 
-// Request ID first — every log entry after this can reference it
-app.use(requestId);
+// -------------------- TRUST PROXY --------------------
+// Rate limiting and req.ip depend on this being correct.
+// - No proxy (local dev / single server): "false"
+// - Single proxy (Vercel/Render/Railway): "1"
+// - CDN + proxy (Cloudflare + Nginx): "2"
+const trustProxy = process.env.TRUST_PROXY;
+if (trustProxy === "false" || trustProxy === undefined) {
+  app.set("trust proxy", false);
+} else if (!Number.isNaN(Number(trustProxy))) {
+  app.set("trust proxy", Number(trustProxy));
+} else {
+  app.set("trust proxy", trustProxy); // e.g., "loopback"
+}
 
-// Structured request logging
+// -------------------- CORS --------------------
+// Only allow configured frontend origins. Requests without Origin header
+// (curl, mobile apps, webhooks) bypass CORS — that's expected.
+const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:3000")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // No origin (server-to-server, curl, mobile) → allow
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS: origin ${origin} not allowed`));
+    },
+    credentials: true, // allow cookies (for frontend cookie auth later)
+    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-request-id",
+      "x-mock-signature",
+    ],
+    exposedHeaders: ["x-request-id", "ratelimit-limit", "ratelimit-remaining"],
+    maxAge: 600,
+  }),
+);
+
+// -------------------- REQUEST ID + LOGGING --------------------
+app.use(requestId);
 app.use(httpLogger);
 
+// -------------------- WEBHOOKS (before express.json) --------------------
+// Webhooks need raw body for signature verification.
 app.use(
   "/api/webhooks",
   express.json({
@@ -33,15 +83,16 @@ app.use(
   webhooksRoutes,
 );
 
+// -------------------- JSON BODY PARSER --------------------
 app.use(express.json());
 
+// -------------------- HEALTH --------------------
 app.get("/health", async (req, res) => {
   const startTime = Date.now();
   try {
     await prisma.$queryRaw`SELECT 1`;
     const dbLatency = Date.now() - startTime;
 
-    // Optional: query queue depths if models exist
     let pendingNotifications = 0;
     try {
       pendingNotifications = await prisma.notification.count({
@@ -70,6 +121,7 @@ app.get("/health", async (req, res) => {
   }
 });
 
+// -------------------- ROUTES --------------------
 app.use("/api/auth", authRoutes);
 app.use("/api/platform", platformRoutes);
 app.use("/api/company", companyRoutes);
@@ -77,14 +129,13 @@ app.use("/api/customer", customerRoutes);
 app.use("/api/tickets", ticketsRoutes);
 app.use("/api", publicRoutes);
 
+// -------------------- ERROR HANDLER --------------------
 app.use((error, req, res, _next) => {
   const statusCode = error.statusCode || 500;
   const isDev = process.env.NODE_ENV !== "production";
 
-  // Log with request ID
   req.log?.error({ err: error, requestId: req.requestId }, "Request error");
 
-  // Send to Sentry if configured and it's a 500
   if (statusCode === 500) {
     captureException(error, { requestId: req.requestId, path: req.path });
   }
@@ -125,13 +176,10 @@ app.use((error, req, res, _next) => {
   res.status(statusCode).json(body);
 });
 
-// Fail fast if payment provider is misconfigured
+// -------------------- STARTUP CHECKS --------------------
 getProvider();
-
-// Fail fast if notification provider is misconfigured
 getNotificationProvider();
 
-// Background services
 if (process.env.ENABLE_PAYMENT_RECONCILER === "true") {
   startPaymentReconciler();
 }
